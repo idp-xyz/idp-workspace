@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Api, ApiError } from './api.ts';
+import { Admin } from './Admin.tsx';
 import { AppFrame } from './AppFrame.tsx';
 import { Inbox } from './Inbox.tsx';
 import type { ShellUI } from './bridgeHandlers.ts';
-import type { InboxItem, InstalledApp, Workspace } from './types.ts';
+import type { InboxItem, InstalledApp, Me, Workspace } from './types.ts';
 
 interface Toast { id: number; message: string; level: string }
 
@@ -12,6 +13,7 @@ export function App(props: { api?: Api }) {
   const [api] = useState(() => props.api ?? new Api());
   const [token, setToken] = useState(api.token);
   const [devMode, setDevMode] = useState(false);
+  const [me, setMe] = useState<Me | null>(null);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [ws, setWs] = useState<Workspace | null>(null);
   const [apps, setApps] = useState<InstalledApp[]>([]);
@@ -29,7 +31,8 @@ export function App(props: { api?: Api }) {
 
   useEffect(() => { api.shellConfig().then((c) => setDevMode(c.devMode)).catch(() => {}); }, [api]);
   useEffect(() => {
-    if (!token) return;
+    if (!token) { setMe(null); return; }
+    api.me().then(setMe).catch(() => {});
     setError(null); // a new sign-in starts clean: errors of an earlier token are not this session's
     api.workspaces().then((list) => {
       setWorkspaces(list);
@@ -65,6 +68,7 @@ export function App(props: { api?: Api }) {
       </header>
       <nav>
         <button className={view === 'inbox' ? 'active' : ''} onClick={() => setView('inbox')}>收件箱{open > 0 && <span className="badge">{open}</span>}</button>
+        {me?.roles.includes('ws-admin') && <button className={view === '@admin' ? 'active' : ''} onClick={() => setView('@admin')}>管理</button>}
         {apps.filter((a) => a.manifest.entry).map((a) => (
           <button key={a.manifest.name} className={view === a.manifest.name ? 'active' : ''} onClick={() => setView(a.manifest.name)}>{a.manifest.title}</button>
         ))}
@@ -73,6 +77,7 @@ export function App(props: { api?: Api }) {
         {error && <p className="error" role="alert">{error}</p>}
         {!ws && <p className="muted">你还不属于任何工作空间。</p>}
         {ws && view === 'inbox' && <Inbox api={api} ws={ws} items={items} apps={apps} confirm={ui.confirm} notify={notify} onChanged={(it) => setItems((cur) => cur.map((x) => x.itemId === it.itemId ? it : x))} />}
+        {view === '@admin' && me?.roles.includes('ws-admin') && <Admin api={api} workspaces={workspaces} current={ws} notify={notify} onWorkspaces={() => api.workspaces().then(setWorkspaces).catch(() => {})} />}
         {ws && current && <AppFrame api={api} ws={ws} app={current} ui={ui} contextVersion={0} />}
       </main>
       <div className="toasts" aria-live="polite">{toasts.map((t) => <div key={t.id} className={`toast ${t.level}`}>{t.message}</div>)}</div>

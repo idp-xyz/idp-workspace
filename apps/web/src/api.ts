@@ -1,6 +1,6 @@
 // The shell's client of the workspace API (same origin). The bearer token lives in sessionStorage
 // for the tab only; it is never given to an app frame (ADR-0001 D5).
-import type { InboxItem, InstalledApp, Invocation, Workspace, WorkContext } from './types.ts';
+import type { AuditEvent, InboxItem, InstalledApp, InstallationRow, Invocation, Me, Member, Release, Workspace, WorkContext } from './types.ts';
 import { sseParser } from './sse.ts';
 
 export class ApiError extends Error {
@@ -39,13 +39,30 @@ export class Api {
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     const text = await res.text();
-    const json = text ? JSON.parse(text) : null;
+    const json = text ? JSON.parse(text) : null; // 204 has no body
     if (!res.ok) {
       const err = json?.error ?? {};
       throw new ApiError(res.status, err.code ?? `HTTP_${res.status}`, err.message ?? res.statusText);
     }
     return json as T;
   }
+
+  me() { return this.request<Me>('GET', '/v1/me'); }
+
+  // ---- administration (ws-admin; the server enforces it) ----
+  createWorkspace(name: string, displayName: string) { return this.request<Workspace>('POST', '/api/v1/workspaces', { name, displayName }); }
+  members(ws: string) { return this.request<{ members: Member[] }>('GET', `/api/v1/workspaces/${encodeURIComponent(ws)}/members`).then((r) => r.members); }
+  putMember(ws: string, subject: string, roles: string[]) { return this.request<Member>('PUT', `/api/v1/workspaces/${encodeURIComponent(ws)}/members/${encodeURIComponent(subject)}`, { roles }); }
+  removeMember(ws: string, subject: string) { return this.request<null>('DELETE', `/api/v1/workspaces/${encodeURIComponent(ws)}/members/${encodeURIComponent(subject)}`); }
+  releases() { return this.request<{ releases: Release[] }>('GET', '/api/v1/apps').then((r) => r.releases); }
+  publish(manifest: unknown) { return this.request<Release>('POST', '/api/v1/apps', manifest); }
+  revoke(name: string, version: string, reason: string) { return this.request<Release>('POST', `/api/v1/apps/${encodeURIComponent(name)}/${encodeURIComponent(version)}/revoke`, { reason }); }
+  installations(ws: string) { return this.request<{ installations: InstallationRow[] }>('GET', `/api/v1/workspaces/${encodeURIComponent(ws)}/installations`).then((r) => r.installations); }
+  install(ws: string, app: string, version: string, config: Record<string, unknown>, revision?: number) {
+    return this.request<InstallationRow>('PUT', `/api/v1/workspaces/${encodeURIComponent(ws)}/installations/${encodeURIComponent(app)}`, { version, config }, revision ? { 'If-Match': String(revision) } : {});
+  }
+  uninstall(ws: string, app: string) { return this.request<null>('DELETE', `/api/v1/workspaces/${encodeURIComponent(ws)}/installations/${encodeURIComponent(app)}`); }
+  audit(limit = 50) { return this.request<{ events: AuditEvent[] }>('GET', `/api/v1/audit?limit=${limit}`).then((r) => r.events); }
 
   shellConfig() { return this.request<{ devMode: boolean; version: string }>('GET', '/shell-config.json'); }
   workspaces() { return this.request<{ workspaces: Workspace[] }>('GET', '/v1/workspaces').then((r) => r.workspaces); }

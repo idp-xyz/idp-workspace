@@ -66,9 +66,14 @@ paths:
   /api/v1/workspaces/{ws}/invocations:
     parameters: [{$ref: '#/components/parameters/ws'}]
     get: {summary: 'All invocations of the workspace (?subject=, ?limit=). ws-admin', responses: {'200': {description: '{invocations}'}}}
+  /api/v1/workspaces/{ws}/installations:
+    parameters: [{$ref: '#/components/parameters/ws'}]
+    get: {summary: 'Every installation of the workspace, revoked releases included (releaseStatus). ws-admin', responses: {'200': {description: '{installations}'}}}
   /api/v1/audit:
     get: {summary: 'Administrative audit of the tenant. ws-admin', responses: {'200': {description: '{events}'}}}
 
+  /v1/me:
+    get: {summary: 'The caller as the token states it: {subject, tenant, roles}. A hint for navigation; the server decides every call', responses: {'200': {description: ok}}}
   /v1/workspaces:
     get: {summary: 'The workspaces the caller belongs to (administrators: all). ws-member', responses: {'200': {description: '{workspaces}'}}}
   /v1/workspaces/{ws}:

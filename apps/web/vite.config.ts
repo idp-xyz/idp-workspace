@@ -13,5 +13,5 @@ export default defineConfig({
       '/shell-config.json': { target: 'http://127.0.0.1:8560' },
     },
   },
-  test: { environment: 'jsdom', include: ['test/**/*.test.{ts,tsx}'] },
+  test: { environment: 'jsdom', include: ['test/**/*.test.{ts,tsx}'], setupFiles: ['test/setup.ts'] },
 });

@@ -367,6 +367,14 @@ func (a *API) Handler() http.Handler {
 		out, err := a.Store.ListInvocations(r.Context(), p.Tenant, w.ID, r.URL.Query().Get("subject"), limit)
 		return 200, map[string]any{"invocations": out}, err
 	}, admin))
+	mux.Handle("GET /api/v1/workspaces/{ws}/installations", a.role(func(r *http.Request, p authorization.Principal) (int, any, error) {
+		w, err := a.workspaceOf(r, p)
+		if err != nil {
+			return 0, nil, err
+		}
+		out, err := a.Store.ListInstallations(r.Context(), p.Tenant, w.ID)
+		return 200, map[string]any{"installations": out}, err
+	}, admin))
 	mux.Handle("GET /api/v1/audit", a.role(func(r *http.Request, p authorization.Principal) (int, any, error) {
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		out, err := a.Store.ListAudit(r.Context(), p.Tenant, limit)
@@ -374,6 +382,15 @@ func (a *API) Handler() http.Handler {
 	}, admin))
 
 	// ---- the member's workspace (D1, D3, D5) ----
+	// who the token says the caller is: a hint for the shell's navigation (the server decides every call)
+	mux.HandleFunc("GET /v1/me", func(w http.ResponseWriter, r *http.Request) {
+		p := principalOf(r)
+		roles := p.Roles
+		if roles == nil {
+			roles = []string{}
+		}
+		transport.WriteJSON(w, 200, map[string]any{"subject": p.Subject, "tenant": p.Tenant, "roles": roles})
+	})
 	mux.Handle("GET /v1/workspaces", a.role(func(r *http.Request, p authorization.Principal) (int, any, error) {
 		out, err := a.Store.ListWorkspaces(r.Context(), p.Tenant, p.Subject, p.Has(authorization.RoleAdmin))
 		return 200, map[string]any{"workspaces": out}, err

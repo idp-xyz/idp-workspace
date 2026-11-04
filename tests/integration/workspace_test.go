@@ -381,6 +381,15 @@ func TestWorkspaceEndToEnd(t *testing.T) {
 			t.Fatalf("%v", apps)
 		}
 		e.must(404, "GET", "/v1/workspaces/us-ops/apps", "dan", nil)
+		// the administrator's list keeps what the member's list hides (revoked releases) - checked after revocation below
+		ins := e.must(200, "GET", "/api/v1/workspaces/us-ops/installations", "alice", nil)["installations"].([]any)
+		if len(ins) != 1 || ins[0].(map[string]any)["app"] != "orders" {
+			t.Fatalf("%v", ins)
+		}
+		e.must(403, "GET", "/api/v1/workspaces/us-ops/installations", "bob", nil)
+		if me := e.must(200, "GET", "/v1/me", "bob", nil); me["subject"] != "bob" || fmt.Sprint(me["roles"]) != "[ws-member]" {
+			t.Fatalf("%v", me)
+		}
 	})
 
 	t.Run("inbox-is-a-view", func(t *testing.T) {
@@ -674,6 +683,9 @@ func TestWorkspaceEndToEnd(t *testing.T) {
 		e.must(409, "POST", "/api/v1/apps/orders/1.2.0/revoke", "alice", map[string]any{"reason": "again"})
 		if apps := e.must(200, "GET", "/v1/workspaces/us-ops/apps", "bob", nil)["apps"].([]any); len(apps) != 0 {
 			t.Fatalf("a revoked release is still offered: %v", apps)
+		}
+		if ins := e.must(200, "GET", "/api/v1/workspaces/us-ops/installations", "alice", nil)["installations"].([]any); len(ins) != 1 || ins[0].(map[string]any)["releaseStatus"] != "revoked" {
+			t.Fatalf("the administrator must still see the revoked installation: %v", ins)
 		}
 		if st, out := e.call("POST", "/v1/workspaces/us-ops/actions/invoke", "bob", map[string]any{"app": "orders", "action": "order.review", "input": map[string]any{"message": "x"}}); st != 409 || code(out) != "APP_REVOKED" {
 			t.Fatalf("%d %v", st, out)

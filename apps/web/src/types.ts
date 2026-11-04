@@ -17,3 +17,9 @@ export interface InboxItem {
 }
 export interface WorkContext { workspaceId: string; subject: string; entities: Entity[]; app?: string; thread?: string; itemId?: string; version: number }
 export interface Invocation { invocationId: string; app: string; action: string; status: 'succeeded' | 'failed'; result?: Record<string, unknown>; error?: { code: string; message: string } }
+
+export interface Me { subject: string; tenant: string; roles: string[] }
+export interface Member { subject: string; roles: string[]; addedBy: string; addedAt: string }
+export interface Release { name: string; version: string; digest: string; status: 'published' | 'revoked'; manifest: Manifest; publishedBy: string; publishedAt: string; revocation?: { by: string; at: string; reason: string } }
+export interface InstallationRow { installationId: string; app: string; version: string; config: Record<string, unknown>; revision: number; releaseStatus: 'published' | 'revoked' }
+export interface AuditEvent { id: number; at: string; subject: string; action: string; resourceId: string | null; detail: unknown }

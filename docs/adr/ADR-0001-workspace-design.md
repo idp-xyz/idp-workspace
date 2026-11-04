@@ -63,6 +63,7 @@
 | D9 | **Web 壳**：`apps/web`（React 19 + Vite + TypeScript），与 `packages/bridge` 同属仓库根的 npm workspaces。构建产物由 Go 服务从 `IDP_WORKSPACE_WEB_DIR` 提供（`/` 与 `/assets/*`；入口页带 CSP：`default-src 'self'`，`frame-src` 限 https 与回环地址，`connect-src 'self'`），镜像内置该目录。壳的功能：工作空间切换、收件箱（含事项动作与确认）、应用启动器、应用框架（沙箱 iframe + 桥壳端：上下文读写、动作调用、收件箱列表、通知）。M2 的登录是开发模式下粘贴令牌（存 sessionStorage）；OIDC 授权码 + PKCE 留到 M3 | 前端与服务同版本发布、同源，避免 CORS 与令牌跨源；登录与身份提供方对接是独立的一块 |
 | D10 | **收件箱推送**：`GET /v1/workspaces/{ws}/inbox/stream` 以 SSE 推送调用者可见、在游标之后变化的事项（事件 `item`，id 为 `<微秒时间戳>:<itemId>`，支持 `Last-Event-ID` 续传），服务端每 2 秒查询一次、15 秒心跳。浏览器端用 fetch 读流（EventSource 不能带 Authorization 头） | 不引入消息中间件；每连接一条按索引的查询，成本可控 |
 | D11 | **运行结果入箱**：`host.run` 成功后，Workspace 以同一凭据跟随 `GET /v1/runs/{id}/events`（SSE）直到 `RUN_FINISHED` / `RUN_ERROR` 或 10 分钟，放入一项 `run`（生产者 `idp-workspace`，`externalRef = run:<runId>`，引用 host / run / id，只指派给调用者）：调用时即放入"运行中"，结束时更新为最后一段助手文本或错误；事项保持 open 供成员阅读后归档（它是通知，不是待决定的事）。跟随在进程内；重启时未完成的跟随丢失（不伪造结果） | 成员发起的 Agent 运行有结果可看，而不必回到 HOST；Workspace 只转述，不保存运行状态 |
+| D13 | **壳里的管理界面**：持 `ws-admin` 的成员在导航里看到"管理"，含三页：工作空间与成员（新建工作空间、加 / 改 / 移除成员及其工作空间角色）、应用（粘贴清单发布、撤销、按版本安装或升级并填配置、卸载）、审计。界面只调用 `/api/v1`，服务端仍逐个判定；`GET /v1/me` 只给导航用。新增管理员可见的 `GET /api/v1/workspaces/{ws}/installations`（含已撤销版本的安装，成员的应用列表看不到它们）。升级安装时带当前 revision 作为 If-Match | 没有这一页，建工作空间、发布与安装应用只能手写 API 调用，壳不能独立使用 |
 | D12 | **与真实 idp-host 联调**：`deploy/e2e.sh` 的 `HOST=1` 起 idp-host 镜像（及其确定性模型替身），Workspace 以 static 凭据（HOST 的开发令牌）调用；测试发布带 `host.run` 动作的应用，调用后在收件箱等到运行结果 | 证明 D4 / D11 在真实进程之间成立 |
 
 ## 7. M2 实施结果（2026-11-04，WSL 实测）
@@ -81,3 +82,9 @@
 - 运行跟随在进程内，重启时进行中的跟随丢失（事项停在"运行中"）；forward 模式下用户令牌在跟随期间过期也会如此。
 - 收件箱流是每连接轮询；大量并发连接时需要改为 LISTEN/NOTIFY 或消息总线。
 - 与 idp-eer 的联调仍待 EER 侧生产者适配器。
+
+## 8. M2 补充：管理界面（2026-11-04）
+
+- D13 已实现：`apps/web/src/Admin.tsx`。服务端拒绝的原因（如 `CONFLICT`、`INVALID_MANIFEST`）原样显示给管理员；非法 JSON 在发出请求前就被拒绝。
+- 验证：组件测试 15 项（管理页：建空间、加成员、发布、安装、升级带 revision、服务端拒绝、审计；导航：只有管理员有"管理"）；集成测试覆盖 `/v1/me` 与已撤销版本仍可见于管理员列表；浏览器冒烟新增整条管理员流程——管理员只用界面建 `eu-ops`、把 bob 加为 approver、发布并安装 `eu-desk`、在审计里看到四类操作、提交非法清单被拒；随后 bob 登录，看到新工作空间和应用，且没有"管理"入口。
+- 局限：不能在界面里编辑清单（发布后不可变，改了要发新版本）；撤销理由用浏览器的 prompt 输入；没有用户目录，成员只能按令牌里的 sub 手填。

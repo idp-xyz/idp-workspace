@@ -127,6 +127,6 @@ if [[ "${BROWSER:-0}" == 1 ]]; then
   call 201 POST "$WS/api/v1/apps" "$ADMIN" '{"schemaVersion":"idp.workspace.app/v1","name":"demo","version":"1.0.0","title":"Demo","publisher":"IDP","entry":{"url":"http://127.0.0.1:9700/demo-app.html"},"capabilities":["context.read","actions.invoke","ui.notify"],"actions":[{"name":"demo.ping","title":"Ping","target":{"kind":"webhook","url":"http://127.0.0.1:9701/hook"},"input":{"type":"object"}}]}' >/dev/null
   call 201 PUT "$WS/api/v1/workspaces/us-ops/installations/demo" "$ADMIN" '{"version":"1.0.0"}' >/dev/null
   call 200 PUT "$WS/v1/workspaces/us-ops/context" "$MEMBER" '{"entities":[{"type":"order","id":"1001"}]}' >/dev/null
-  WS_URL="$WS" MEMBER_TOKEN="$MEMBER" PRODUCER_TOKEN="$PRODUCER" node tests/browser/shell.smoke.mjs
+  WS_URL="$WS" MEMBER_TOKEN="$MEMBER" PRODUCER_TOKEN="$PRODUCER" ADMIN_TOKEN="$ADMIN" node tests/browser/shell.smoke.mjs
 fi
 echo "PASS: workspace image e2e (tenant $TENANT$([[ "$HOST" == 1 ]] && echo ', with idp-host'))"

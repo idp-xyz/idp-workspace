@@ -28,6 +28,14 @@ main { padding: 16px 20px; }
 .toast { background: var(--ink); color: #fff; padding: 8px 12px; border-radius: 6px; max-width: 360px; }
 .toast.success { background: var(--ok); }
 .toast.error { background: var(--bad); }
+table { border-collapse: collapse; width: 100%; max-width: 900px; background: #fff; margin: 8px 0 16px; }
+th, td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }
+.admin h2 { font-size: 16px; margin: 20px 0 6px; }
+.admin textarea, .admin input, .admin select { font: inherit; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; }
+.admin textarea { width: 100%; max-width: 900px; box-sizing: border-box; }
+.mono { font-family: ui-monospace, monospace; font-size: 12px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.tabs { display: flex; gap: 6px; }
 .signin { max-width: 520px; margin: 12vh auto; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 24px; }
 .signin form { display: grid; gap: 10px; }
 .signin textarea { font: 12px ui-monospace, monospace; }

@@ -9,7 +9,7 @@ IDP TELOS 的企业工作入口（Workspace）：工作空间与成员、应用�
 - **收件箱**：生产者（`ws-producer`）按 `(producer, externalRef)` 幂等放入、只有生产者能结束；成员按主体或工作空间角色看到，自己的已读 / 归档标记互不影响。
 - **动作**：成员调用应用的动作，Workspace 校验成员资格、发布状态、契约角色、事项是否提供该动作、输入 Schema，再转给拥有决定的系统：`host.run`（idp-host 建 AgentRun）、`eer.decision`（idp-eer 对 T2 审批作决定）、`webhook`（HMAC 签名调用应用后端）；每次调用留记录，`Idempotency-Key` 幂等。
 - **应用桥**：`packages/bridge`（TypeScript、零依赖）——壳端只接受应用入口源的消息、只执行清单申请的能力；应用端带超时与关联的请求；webhook 签名校验（与 Go 端同一测试向量）。
-- **Web 壳**（`apps/web`，React）：工作空间、收件箱（SSE 实时推送）、应用导航与沙箱 frame；镜像内置并由服务同源提供。`host.run` 的结果自动回到发起者的收件箱。与真实 idp-host 的联调：`HOST=1 bash deploy/e2e.sh`；浏览器冒烟：`BROWSER=1 bash deploy/e2e.sh`。
+- **Web 壳**（`apps/web`，React）：工作空间、收件箱（SSE 实时推送）、应用导航与沙箱 frame、管理员的管理页（工作空间与成员、发布 / 撤销 / 安装应用、审计）；镜像内置并由服务同源提供。`host.run` 的结果自动回到发起者的收件箱。与真实 idp-host 的联调：`HOST=1 bash deploy/e2e.sh`；浏览器冒烟：`BROWSER=1 bash deploy/e2e.sh`。
 - 契约 `idp.telos.workspace` 1.0.0 在 [`api/contracts/`](api/contracts)（`go test ./internal/workspace -run TestContract`），接口见 [`api/openapi.yaml`](api/openapi.yaml)。
 
 ## 运行

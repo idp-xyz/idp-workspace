@@ -6,7 +6,7 @@
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT_CORE || 'playwright-core');
-const WS = process.env.WS_URL, TOKEN = process.env.MEMBER_TOKEN, PRODUCER = process.env.PRODUCER_TOKEN;
+const WS = process.env.WS_URL, TOKEN = process.env.MEMBER_TOKEN, PRODUCER = process.env.PRODUCER_TOKEN, ADMIN = process.env.ADMIN_TOKEN;
 const fail = (msg) => { console.error('FAIL: ' + msg); process.exit(1); };
 
 const browser = await chromium.launch({ ...(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {}), args: ['--no-sandbox'] });
@@ -40,7 +40,52 @@ try {
   if (sandbox !== 'allow-scripts allow-forms allow-same-origin') fail('sandbox ' + sandbox);
   const unexpected = errors.filter((e) => !/TARGET_UNAVAILABLE|502|CAPABILITY_DENIED/.test(e));
   if (unexpected.length) fail('page errors: ' + unexpected.join(' | '));
-  console.log('PASS: browser shell: sign-in, inbox, live stream item, framed app through the bridge');
+  console.log('browser: sign-in, inbox, live stream item, framed app through the bridge ok');
+
+  // ---- the administrator does everything through the screens, no API calls ----
+  const admin = await browser.newPage();
+  const adminErrors = [];
+  admin.on('pageerror', (e) => adminErrors.push(String(e)));
+  admin.on('dialog', (d) => d.accept('browser test'));
+  await admin.goto(WS + '/');
+  await admin.fill('#token', ADMIN);
+  await admin.click('button[type=submit]');
+  await admin.click('nav >> text=管理');
+  await admin.fill('input[aria-label=名称]', 'eu-ops');
+  await admin.fill('input[aria-label=显示名]', 'EU operations');
+  await admin.click('button:has-text("创建")');
+  await admin.waitForSelector('.toast >> text=工作空间已创建', { timeout: 10000 });
+  await admin.selectOption('header select', { label: 'EU operations' });
+  await admin.fill('input[aria-label=成员]', 'bob');
+  await admin.fill('input[aria-label=角色]', 'approver');
+  await admin.click('button:has-text("添加或更新")');
+  await admin.waitForSelector('td:has-text("approver")', { timeout: 10000 });
+  await admin.click('role=tab[name="应用"]');
+  await admin.fill('textarea[aria-label=应用清单]', JSON.stringify({ schemaVersion: 'idp.workspace.app/v1', name: 'eu-desk', version: '1.0.0', title: 'EU desk', publisher: 'IDP',
+    entry: { url: 'http://127.0.0.1:9700/demo-app.html' }, capabilities: ['context.read'], actions: [] }));
+  await admin.click('button:has-text("发布")');
+  await admin.waitForSelector('.toast >> text=已发布', { timeout: 10000 });
+  await admin.selectOption('select[aria-label="安装哪个版本"]', 'eu-desk@1.0.0');
+  await admin.click('button:has-text("安装 / 升级")');
+  await admin.waitForSelector('.toast >> text=已安装', { timeout: 10000 });
+  await admin.click('role=tab[name="审计"]');
+  for (const a of ['workspace.create', 'member.put', 'app.publish', 'app.install']) await admin.waitForSelector(`td:text-is("${a}")`, { timeout: 10000 });
+  // a bad manifest is refused by the server and the reason is shown
+  await admin.click('role=tab[name="应用"]');
+  await admin.fill('textarea[aria-label=应用清单]', JSON.stringify({ schemaVersion: 'idp.workspace.app/v1', name: 'Bad Name', version: '1', title: 't', publisher: 'p', capabilities: [], actions: [] }));
+  await admin.click('button:has-text("发布")');
+  await admin.waitForSelector('.toast >> text=INVALID_MANIFEST', { timeout: 10000 });
+  // bob, now a member of eu-ops through the screen, sees the new workspace and its app; he has no admin screen
+  const bob = await browser.newPage();
+  await bob.goto(WS + '/');
+  await bob.fill('#token', TOKEN);
+  await bob.click('button[type=submit]');
+  await bob.waitForSelector('header select');
+  if (await bob.locator('nav >> text=管理').count() !== 0) fail('a member sees the admin screen');
+  await bob.selectOption('header select', { label: 'EU operations' });
+  await bob.waitForSelector('nav >> text=EU desk', { timeout: 10000 });
+  if (adminErrors.length) fail('admin page errors: ' + adminErrors.join(' | '));
+  console.log('PASS: browser shell: sign-in, inbox, live stream, framed app, and the administrator\'s screens (workspace, member, publish, install, audit, refusal)');
 } finally {
   await browser.close();
 }

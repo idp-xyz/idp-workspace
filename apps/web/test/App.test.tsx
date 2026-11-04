@@ -52,3 +52,27 @@ describe('App sign-in', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 });
+
+describe('App navigation by role', () => {
+  const build = (roles: string[]) => {
+    const fetcher = (async (url: string) => {
+      const json = (v: unknown) => new Response(JSON.stringify(v), { status: 200 });
+      if (url === '/shell-config.json') return json({ devMode: true, version: 't' });
+      if (url === '/v1/me') return json({ subject: 's', tenant: 't', roles });
+      if (url === '/v1/workspaces') return json({ workspaces: [{ workspaceId: 'w1', name: 'us-ops', displayName: 'US operations' }] });
+      if (url.endsWith('/apps')) return json({ apps: [] });
+      if (url.endsWith('/inbox')) return json({ items: [] });
+      return new Promise<Response>(() => {});
+    }) as unknown as typeof fetch;
+    const store = new Map<string, string>([['idp-workspace.token', 'tok']]);
+    return new Api(fetcher, { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => void store.set(k, v), removeItem: (k) => void store.delete(k) });
+  };
+  it('offers the admin screen to administrators only', async () => {
+    const admin = render(<App api={build(['ws-admin'])} />);
+    expect(await admin.findByText('管理')).toBeTruthy();
+    admin.unmount();
+    const member = render(<App api={build(['ws-member'])} />);
+    await member.findByText('收件箱是空的。');
+    expect(member.queryByText('管理')).toBeNull();
+  });
+});
