@@ -30,6 +30,7 @@ export function App(props: { api?: Api }) {
   useEffect(() => { api.shellConfig().then((c) => setDevMode(c.devMode)).catch(() => {}); }, [api]);
   useEffect(() => {
     if (!token) return;
+    setError(null); // a new sign-in starts clean: errors of an earlier token are not this session's
     api.workspaces().then((list) => {
       setWorkspaces(list);
       setWs((cur) => cur ?? list[0] ?? null);
@@ -42,6 +43,7 @@ export function App(props: { api?: Api }) {
     if (!ws) return;
     const abort = new AbortController();
     setItems([]);
+    setError(null);
     api.apps(ws.name).then(setApps).catch((e) => setError(String(e)));
     // the stream replays what is open, then pushes changes (ADR-0001 D10)
     api.inbox(ws.name).then(setItems).catch((e) => setError(String(e)));
