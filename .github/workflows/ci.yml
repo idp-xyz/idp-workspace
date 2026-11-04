@@ -1,8 +1,10 @@
 name: CI
 
 # The merge gate of idp-workspace: formatting and vet, unit and contract tests (race detector on), the
-# integration suite against a throwaway PostgreSQL (the Makefile starts it in Docker), the app bridge
-# SDK (type check and tests), the offline image build, and the compose end-to-end of the image.
+# integration suite against a throwaway PostgreSQL (the Makefile starts it in Docker), the frontend
+# (bridge SDK and web shell: type check and tests), and the compose end-to-end of the image with the
+# web shell driven in a real Chromium. The joint run with idp-host (HOST=1) needs the idp-host images
+# built from that repository and is not run here.
 
 on:
   push:
@@ -14,7 +16,7 @@ permissions:
 
 jobs:
   test:
-    name: vet, unit, contract, integration, bridge, image
+    name: vet, unit, contract, integration, frontend, image, browser
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -26,17 +28,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          cache: npm
       - name: Formatting, vet, unit and contract tests
         run: make test
       - name: Integration tests (PostgreSQL in Docker)
         run: make test-integration
-      - name: App bridge SDK (type check, tests)
-        run: |
-          cd packages/bridge
-          npm ci --ignore-scripts
-          npm run typecheck
-          npm test
-      - name: Image build (static binary, docker build --network none)
-        run: bash deploy/build.sh idp-workspace:ci
-      - name: Compose end-to-end (workspace image + PostgreSQL)
-        run: bash deploy/e2e.sh
+      - name: Frontend (bridge SDK and web shell)
+        run: make test-web
+      - name: Chromium for the browser smoke test
+        run: npx playwright-core install --with-deps chromium
+      - name: Compose end-to-end (image with the web shell + PostgreSQL, browser smoke)
+        run: BROWSER=1 bash deploy/e2e.sh

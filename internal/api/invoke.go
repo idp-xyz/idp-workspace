@@ -135,6 +135,9 @@ func (a *API) invoke(r *http.Request, p authorization.Principal) (int, any, erro
 		v.Status, v.Error = workspace.InvocationFailed, &workspace.Problem{Code: f.Code, Message: f.Message}
 	} else {
 		v.Status, v.Result = workspace.InvocationSucceeded, result
+		if contract.Target.Kind == workspace.TargetHostRun && a.Runs != nil {
+			a.follow(r, p, m.Workspace.ID, contract.Title, result, wctx)
+		}
 	}
 	if a.invocations != nil {
 		a.invocations.Inc(contract.Target.Kind, v.Status)

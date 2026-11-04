@@ -1,6 +1,10 @@
-# idp-workspace development topology: the workspace image + PostgreSQL. Driven by deploy/e2e.sh,
-# which generates the secrets in .local/compose.env. The host sees 127.0.0.1:8560 (API) and 9566
-# (metrics). DEV ONLY: HS256 development tokens, plaintext http on the private network.
+# idp-workspace development topology: the workspace image + PostgreSQL; with --profile host also the
+# idp-host image, its worker and the HOST's deterministic model double, so an app action of kind
+# host.run starts a real AgentRun and its result comes back into the inbox (ADR-0001 D4, D11, D12).
+# Driven by deploy/e2e.sh, which generates the secrets in .local/compose.env, the workspace config in
+# .local/workspace.yaml and the HOST config in .local/host.yaml. The host sees 127.0.0.1:8560 (API),
+# 9566 (metrics) and, with the host profile, 8450 (HOST).
+# DEV ONLY: HS256 development tokens, plaintext http on the private networks.
 name: idp-workspace-go
 
 x-hardened: &hardened
@@ -10,6 +14,7 @@ x-hardened: &hardened
 
 networks:
   edge: {}
+  upstream: {internal: true}   # workspace -> host, host -> fakemodel
   data: {internal: true}
 
 volumes:
@@ -44,12 +49,68 @@ services:
     <<: *hardened
     image: ${IDP_WORKSPACE_IMAGE:-idp-workspace:dev}
     command: [serve]
-    networks: [edge, data]
+    networks: [edge, upstream, data]
     ports: ['127.0.0.1:8560:8560', '127.0.0.1:9566:9566']
     environment:
       IDP_DATABASE_URL: postgres://idp_ws_svc:${IDP_APP_DB_PASSWORD:?run deploy/e2e.sh}@postgres:5432/idp_workspace?sslmode=disable
       IDP_WORKSPACE_LISTEN: 0.0.0.0:8560
+      IDP_WORKSPACE_CONFIG: /etc/idp/workspace.yaml
       IDP_DEV_MODE: 'true'
       IDP_DEV_SECRET: ${IDP_DEV_SECRET:?run deploy/e2e.sh}
       IDP_METRICS_LISTEN: 0.0.0.0:9566
+    volumes: ['../.local/workspace.yaml:/etc/idp/workspace.yaml:ro', '../.local/host.key:/etc/idp/host.key:ro']
     depends_on: {postgres: {condition: service_healthy}}
+
+  # ---- the HOST (profile host): images built in the idp-host repository ----
+  fakemodel:
+    <<: *hardened
+    image: ${IDP_FAKEMODEL_IMAGE:-idp-host-fakemodel:dev}
+    profiles: [host]
+    networks: [upstream]
+    environment:
+      IDP_FAKEMODEL_LISTEN: 0.0.0.0:18080
+
+  host-admin:
+    <<: *hardened
+    image: ${IDP_HOST_IMAGE:-idp-host:dev}
+    profiles: [host-tools]
+    networks: [data]
+    environment:
+      IDP_MIGRATION_DATABASE_URL: postgres://postgres:${IDP_PG_OWNER_PASSWORD:?run deploy/e2e.sh}@postgres:5432/idp_host?sslmode=disable
+      IDP_APP_DB_PASSWORD: ${IDP_HOST_DB_PASSWORD:?run deploy/e2e.sh}
+      IDP_DEV_MODE: 'true'
+      IDP_DEV_SECRET: ${IDP_HOST_DEV_SECRET:?run deploy/e2e.sh}
+    depends_on: {postgres: {condition: service_healthy}}
+
+  host:
+    <<: *hardened
+    image: ${IDP_HOST_IMAGE:-idp-host:dev}
+    command: [serve]
+    profiles: [host]
+    networks: [edge, upstream, data]
+    ports: ['127.0.0.1:8450:8450']
+    environment:
+      IDP_DATABASE_URL: postgres://idp_host_svc:${IDP_HOST_DB_PASSWORD:?run deploy/e2e.sh}@postgres:5432/idp_host?sslmode=disable
+      IDP_HOST_LISTEN: 0.0.0.0:8450
+      IDP_DEV_MODE: 'true'
+      IDP_DEV_SECRET: ${IDP_HOST_DEV_SECRET:?run deploy/e2e.sh}
+      IDP_HOST_CREDENTIAL_KEY: ${IDP_HOST_CREDENTIAL_KEY:?run deploy/e2e.sh}
+      IDP_HOST_CONFIG: /etc/idp/host.yaml
+      IDP_HOST_WORKERS: '0'
+    volumes: ['../.local/host.yaml:/etc/idp/host.yaml:ro']
+    depends_on: [fakemodel]
+
+  host-worker:
+    <<: *hardened
+    image: ${IDP_HOST_IMAGE:-idp-host:dev}
+    command: [worker]
+    profiles: [host]
+    networks: [upstream, data]
+    environment:
+      IDP_DATABASE_URL: postgres://idp_host_svc:${IDP_HOST_DB_PASSWORD:?run deploy/e2e.sh}@postgres:5432/idp_host?sslmode=disable
+      IDP_DEV_MODE: 'true'
+      IDP_HOST_CREDENTIAL_KEY: ${IDP_HOST_CREDENTIAL_KEY:?run deploy/e2e.sh}
+      IDP_HOST_CONFIG: /etc/idp/host.yaml
+      IDP_HOST_WORKERS: '2'
+    volumes: ['../.local/host.yaml:/etc/idp/host.yaml:ro']
+    depends_on: [fakemodel]

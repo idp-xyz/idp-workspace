@@ -4,6 +4,7 @@
 package integration
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -15,6 +16,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -28,6 +30,7 @@ import (
 	"idp-workspace/internal/authorization"
 	"idp-workspace/internal/dispatch"
 	"idp-workspace/internal/observability"
+	"idp-workspace/internal/runs"
 )
 
 func scratchDB(t *testing.T) (ownerURL, serviceURL string) {
@@ -114,6 +117,18 @@ func (r *recorder) last() recorded {
 	return r.got[len(r.got)-1]
 }
 
+// find returns the latest request whose path matches.
+func (r *recorder) find(match func(path string) bool) recorded {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := len(r.got) - 1; i >= 0; i-- {
+		if match(r.got[i].Path) {
+			return r.got[i]
+		}
+	}
+	return recorded{}
+}
+
 func (r *recorder) count() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -175,6 +190,13 @@ func newEnv(t *testing.T) *env {
 	}
 	e.host = newRecorder(t, 202, `{"runId":"x","threadId":"thr_1","status":"QUEUED"}`)
 	e.host.replies = func(r recorded) (int, string) {
+		if strings.HasSuffix(r.Path, "/events") { // D11: the run's event stream
+			return 200, "data: {\"type\":\"RUN_STARTED\"}\n\n" +
+				"data: {\"type\":\"TEXT_MESSAGE_START\",\"messageId\":\"m1\"}\n\n" +
+				"data: {\"type\":\"TEXT_MESSAGE_CONTENT\",\"messageId\":\"m1\",\"delta\":\"Order 1001 waits for customs.\"}\n\n" +
+				"data: {\"type\":\"TEXT_MESSAGE_END\",\"messageId\":\"m1\"}\n\n" +
+				"data: {\"type\":\"RUN_FINISHED\"}\n\n"
+		}
 		return 202, fmt.Sprintf(`{"runId":%q,"threadId":"thr_1","status":"QUEUED"}`, r.Body["runId"])
 	}
 	e.eer = newRecorder(t, 202, `{"tenant_id":"eer-acme","execution_id":"execution:7f3a","decision":"approved","accepted":true}`)
@@ -187,7 +209,12 @@ func newEnv(t *testing.T) *env {
 		EERTenant:     "eer-acme",
 		WebhookSecret: e.secret,
 	}
-	a := &api.API{Store: store, Auth: verifier, Dispatcher: d, Log: log, Metrics: observability.NewMetrics(), Version: "it"}
+	web := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(web, "assets"), 0o755)
+	_ = os.WriteFile(filepath.Join(web, "index.html"), []byte("<!doctype html><title>IDP Workspace</title>"), 0o644)
+	_ = os.WriteFile(filepath.Join(web, "assets", "app-1234.js"), []byte("console.log(1)"), 0o644)
+	a := &api.API{Store: store, Auth: verifier, Dispatcher: d, Log: log, Metrics: observability.NewMetrics(), Version: "it", WebDir: web, DevMode: true,
+		Runs: &runs.Follower{Store: store, Endpoint: e.host.srv.URL, Log: log}}
 	tp, _, err := observability.Setup("idp-workspace-it", "it", log)
 	if err != nil {
 		t.Fatal(err)
@@ -471,12 +498,32 @@ func TestWorkspaceEndToEnd(t *testing.T) {
 		if st != 201 {
 			t.Fatalf("%d %v", st, out)
 		}
-		run := e.host.last()
+		run := e.host.find(func(p string) bool { return strings.HasSuffix(p, "/runs") }) // the follower may already be reading events
 		if run.Path != "/v1/agents/order-assistant/runs" || run.Auth != "Bearer "+e.tokens["bob"] || run.Body["threadId"] != "thr_ops_42" || !strings.Contains(string(run.Raw), `\"type\":\"order\"`) {
 			t.Fatalf("%+v %s", run, run.Raw)
 		}
 		if res := out["result"].(map[string]any); res["system"] != "host" || res["id"] != run.Body["runId"] {
 			t.Fatalf("%v", res)
+		}
+		// D11: the run's result comes back into bob's inbox (only bob's)
+		runID := run.Body["runId"].(string)
+		var result map[string]any
+		for i := 0; i < 100 && result == nil; i++ {
+			for _, it := range e.must(200, "GET", "/v1/workspaces/us-ops/inbox?kind=run", "bob", nil)["items"].([]any) {
+				if x := it.(map[string]any); x["externalRef"] == "run:"+runID && strings.HasSuffix(x["title"].(string), "finished") {
+					result = x
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if result == nil || result["summary"] != "Order 1001 waits for customs." || result["producer"] != "idp-workspace" || result["ref"].(map[string]any)["id"] != runID {
+			t.Fatalf("run result: %v", result)
+		}
+		if got := e.host.find(func(p string) bool { return strings.HasSuffix(p, "/events") }); got.Path != "/v1/runs/"+runID+"/events" || got.Auth != "Bearer "+e.tokens["bob"] {
+			t.Fatalf("followed with %+v", got)
+		}
+		if items := e.must(200, "GET", "/v1/workspaces/us-ops/inbox?kind=run", "carol", nil)["items"].([]any); len(items) != 0 {
+			t.Fatalf("carol sees bob's run: %v", items)
 		}
 		// input schema
 		if st, out, _ := invoke("bob", map[string]any{"app": "orders", "action": "order.hold", "input": map[string]any{"orderId": "A-1"}}); st != 422 || code(out) != "INVALID_INPUT" {
@@ -508,6 +555,113 @@ func TestWorkspaceEndToEnd(t *testing.T) {
 		}
 		if all := e.must(200, "GET", "/api/v1/workspaces/us-ops/invocations", "alice", nil)["invocations"].([]any); len(all) != 4 {
 			t.Fatalf("all: %v", all)
+		}
+	})
+
+	t.Run("inbox-stream", func(t *testing.T) {
+		// D10: the stream sends what bob sees, then live changes; carol's stream does not get bob's items
+		api.StreamPoll = 50 * time.Millisecond
+		open := func(who, after string) (*http.Response, *bufio.Reader) {
+			req, _ := http.NewRequest("GET", e.api.URL+"/v1/workspaces/us-ops/inbox/stream?"+after, nil)
+			req.Header.Set("Authorization", "Bearer "+e.tokens[who])
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil || resp.StatusCode != 200 || resp.Header.Get("Content-Type") != "text/event-stream" {
+				t.Fatalf("%v %v", resp, err)
+			}
+			return resp, bufio.NewReader(resp.Body)
+		}
+		next := func(rd *bufio.Reader) (string, map[string]any) {
+			var id string
+			for {
+				line, err := rd.ReadString('\n')
+				if err != nil {
+					t.Fatal(err)
+				}
+				line = strings.TrimSpace(line)
+				switch {
+				case strings.HasPrefix(line, "id: "):
+					id = strings.TrimPrefix(line, "id: ")
+				case strings.HasPrefix(line, "data: "):
+					var it map[string]any
+					_ = json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &it)
+					return id, it
+				}
+			}
+		}
+		resp, rd := open("bob", "replay=open")
+		defer resp.Body.Close()
+		seen := map[string]bool{}
+		var lastID string
+		deadline := time.Now().Add(5 * time.Second)
+		e.must(201, "POST", "/v1/workspaces/us-ops/inbox/items", "svc-eer", map[string]any{"externalRef": "stream:1", "kind": "task", "title": "Check the Ohio lane",
+			"ref": map[string]any{"system": "external", "kind": "task", "id": "s1"}, "assignees": map[string]any{"subjects": []string{"bob"}}})
+		for !seen["stream:1"] && time.Now().Before(deadline) {
+			id, it := next(rd)
+			seen[it["externalRef"].(string)], lastID = true, id
+		}
+		if !seen["stream:1"] || !seen["notice:1"] {
+			t.Fatalf("stream: %v", seen)
+		}
+		// resume after the last event: only later changes arrive
+		resp.Body.Close()
+		resp2, rd2 := open("bob", "after="+url.QueryEscape(lastID))
+		defer resp2.Body.Close()
+		e.must(201, "POST", "/v1/workspaces/us-ops/inbox/items", "svc-eer", map[string]any{"externalRef": "stream:2", "kind": "task", "title": "Second",
+			"ref": map[string]any{"system": "external", "kind": "task", "id": "s2"}, "assignees": map[string]any{"subjects": []string{"bob"}}})
+		for {
+			_, it := next(rd2)
+			if it["externalRef"] == "stream:2" {
+				break
+			}
+			if it["externalRef"] == "notice:1" {
+				t.Fatal("resumed stream replayed an old item")
+			}
+		}
+		// carol's stream never carries bob's task
+		resp3, rd3 := open("carol", "replay=open")
+		defer resp3.Body.Close()
+		e.must(201, "POST", "/v1/workspaces/us-ops/inbox/items", "svc-eer", map[string]any{"externalRef": "stream:3", "kind": "notification", "title": "Everyone",
+			"ref": map[string]any{"system": "external", "kind": "n", "id": "s3"}})
+		for {
+			_, it := next(rd3)
+			if strings.HasPrefix(it["externalRef"].(string), "stream:1") || it["externalRef"] == "stream:2" {
+				t.Fatalf("carol got %v", it)
+			}
+			if it["externalRef"] == "stream:3" {
+				break
+			}
+		}
+		e.must(404, "GET", "/v1/workspaces/us-ops/inbox/stream", "dan", nil)
+	})
+
+	t.Run("web-shell", func(t *testing.T) {
+		get := func(path string) (*http.Response, string) {
+			resp, err := http.Get(e.api.URL + path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			return resp, string(b)
+		}
+		resp, body := get("/w/us-ops/inbox") // a client-side route: index.html, no token needed
+		if resp.StatusCode != 200 || !strings.Contains(body, "IDP Workspace") || !strings.Contains(resp.Header.Get("Content-Security-Policy"), "frame-ancestors 'none'") {
+			t.Fatalf("%d %v %s", resp.StatusCode, resp.Header, body)
+		}
+		if resp, _ := get("/assets/app-1234.js"); resp.StatusCode != 200 || !strings.Contains(resp.Header.Get("Cache-Control"), "immutable") {
+			t.Fatalf("%v", resp.Header)
+		}
+		if resp, body := get("/../../etc/passwd"); resp.StatusCode != 200 || !strings.Contains(body, "IDP Workspace") {
+			t.Fatalf("path traversal: %d %s", resp.StatusCode, body)
+		}
+		if resp, body := get("/shell-config.json"); resp.StatusCode != 200 || !strings.Contains(body, `"devMode":true`) {
+			t.Fatalf("%d %s", resp.StatusCode, body)
+		}
+		if resp, _ := get("/v1/workspaces"); resp.StatusCode != 401 {
+			t.Fatalf("the API stays authenticated: %d", resp.StatusCode)
+		}
+		if resp, _ := get("/api/v1/unknown"); resp.StatusCode != 401 {
+			t.Fatalf("%d", resp.StatusCode)
 		}
 	})
 

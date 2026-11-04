@@ -1,0 +1,18 @@
+{
+  "name": "idp-workspace-frontend",
+  "private": true,
+  "description": "npm workspaces of idp-workspace: the app bridge SDK and the web shell (ADR-0001 D5, D9).",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm test --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present"
+  },
+  "devDependencies": {
+    "playwright-core": "1.48.2"
+  }
+}

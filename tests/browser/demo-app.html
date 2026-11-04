@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Demo app</title></head>
+<body>
+<h1>Demo app</h1>
+<pre id="log"></pre>
+<script>
+// A third-party app page speaking idp.bridge/v1 by hand (no SDK), framed by the workspace shell.
+const shell = new URLSearchParams(location.search).get('shell') || 'http://127.0.0.1:8560';
+const log = (line) => { document.getElementById('log').textContent += line + '\n'; };
+let seq = 0;
+const pending = new Map();
+window.addEventListener('message', (ev) => {
+  if (ev.origin !== shell || ev.source !== window.parent) return;
+  const m = ev.data;
+  if (m && m.protocol === 'idp.bridge/v1' && m.type === 'response' && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
+  if (m && m.type === 'event') log('event ' + m.event);
+});
+const call = (method, params) => new Promise((resolve) => {
+  const id = 'demo.' + (++seq);
+  pending.set(id, resolve);
+  parent.postMessage({ protocol: 'idp.bridge/v1', type: 'request', id, method, ...(params ? { params } : {}) }, shell);
+});
+(async () => {
+  const hello = await call('bridge.hello', { app: 'demo', version: '1.0.0' });
+  log('hello ' + (hello.result ? hello.result.workspace.name + ' ' + hello.result.capabilities.join(',') : hello.error.code));
+  const ctx = await call('context.get');
+  log('context ' + (ctx.result ? ctx.result.entities.map((e) => e.type + ':' + e.id).join(',') : ctx.error.code));
+  const inbox = await call('inbox.list');
+  log('inbox ' + (inbox.result ? 'ok' : inbox.error.code));
+  const inv = await call('actions.invoke', { action: 'demo.ping', input: { note: 'hi' } });
+  log('invoke ' + (inv.result ? inv.result.status : inv.error.code));
+  const n = await call('ui.notify', { message: 'hello from the app', level: 'success' });
+  log('notify ' + (n.error ? n.error.code : 'ok'));
+  log('token-visible ' + /eyJ/.test(JSON.stringify([hello, ctx, inbox, inv, n])));
+  log('done');
+})();
+</script>
+</body>
+</html>

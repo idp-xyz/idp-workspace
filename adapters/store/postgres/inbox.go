@@ -307,3 +307,39 @@ func (s *Store) MarkItem(ctx context.Context, tenant, workspaceID, id, subject s
 	}
 	return s.GetItem(ctx, tenant, workspaceID, id, subject, roles)
 }
+
+// Cursor is a position in a workspace's stream of item changes.
+type Cursor struct {
+	At time.Time
+	ID string
+}
+
+// ChangedItems lists the items subject sees in a workspace that changed at or after since (oldest
+// first), for the inbox stream (D10). The caller keeps an overlap window and drops what it already
+// sent, because a transaction's now() can precede an earlier-committed one's.
+func (s *Store) ChangedItems(ctx context.Context, tenant, workspaceID, subject string, roles []string, since time.Time, limit int) ([]workspace.InboxItem, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	if roles == nil {
+		roles = []string{}
+	}
+	out := []workspace.InboxItem{}
+	err := s.InTenant(ctx, tenant, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT `+itemCols+itemFrom("$2")+` WHERE i.workspace_id = $1 AND `+visibleItemSQL+` AND i.updated_at >= $4
+			ORDER BY i.updated_at, i.id LIMIT $5`, workspaceID, subject, roles, since, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			it, err := scanItem(rows)
+			if err != nil {
+				return err
+			}
+			out = append(out, *it)
+		}
+		return rows.Err()
+	})
+	return out, err
+}

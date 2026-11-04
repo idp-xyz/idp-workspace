@@ -12,6 +12,7 @@
 //	IDP_DATABASE_URL             service connection (a member of idp_ws_app, never a superuser)
 //	IDP_MIGRATION_DATABASE_URL   schema owner connection (migrate, ensure-login, seed-tenant)
 //	IDP_WORKSPACE_LISTEN         default 127.0.0.1:8560
+//	IDP_WORKSPACE_WEB_DIR        the built web shell (apps/web/dist) served at / (ADR-0001 D9); unset = API only
 //	IDP_WORKSPACE_CONFIG         optional YAML: action targets (idp-host, idp-eer) and the webhook secret (ADR-0001 D4)
 //	IDP_DEV_MODE                 "true": HS256 development tokens
 //	IDP_WORKSPACE_ISSUER / IDP_WORKSPACE_AUDIENCE   accepted tokens (default idp-workspace-dev / idp-workspace)
@@ -42,6 +43,7 @@ import (
 	"idp-workspace/internal/config"
 	"idp-workspace/internal/dispatch"
 	"idp-workspace/internal/observability"
+	"idp-workspace/internal/runs"
 	"idp-workspace/internal/transport"
 )
 
@@ -206,7 +208,10 @@ func serve(log *slog.Logger) error {
 	if ms := observability.ServeMetrics(env("IDP_METRICS_LISTEN", ""), metrics, log); ms != nil {
 		defer ms.Close()
 	}
-	a := &api.API{Store: store, Auth: verifier, Dispatcher: d, Log: log, Metrics: metrics, Version: version}
+	a := &api.API{Store: store, Auth: verifier, Dispatcher: d, Log: log, Metrics: metrics, Version: version, DevMode: dev, WebDir: env("IDP_WORKSPACE_WEB_DIR", "")}
+	if d.Host != nil { // ADR-0001 D11: results of host.run actions come back into the inbox
+		a.Runs = &runs.Follower{Store: store, Endpoint: d.Host.Endpoint, HTTP: d.Host.HTTP, Log: log}
+	}
 	srv := &http.Server{Addr: env("IDP_WORKSPACE_LISTEN", "127.0.0.1:8560"), Handler: observability.HTTPMiddleware(tp, "idp-workspace/api", a.Handler()),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 60 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second}
 	if cert := env("IDP_WORKSPACE_TLS_CERT_FILE", ""); cert != "" {
@@ -222,7 +227,7 @@ func serve(log *slog.Logger) error {
 			errc <- srv.ListenAndServe()
 		}
 	}()
-	log.Info("idp-workspace listening", "addr", srv.Addr, "devMode", dev, "tls", srv.TLSConfig != nil, "host", d.Host != nil, "eer", d.EER != nil, "webhooks", d.WebhookSecret != nil)
+	log.Info("idp-workspace listening", "addr", srv.Addr, "devMode", dev, "tls", srv.TLSConfig != nil, "host", d.Host != nil, "eer", d.EER != nil, "webhooks", d.WebhookSecret != nil, "web", a.WebDir != "")
 	select {
 	case err := <-errc:
 		return err

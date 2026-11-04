@@ -23,7 +23,7 @@
 | D2 | **应用注册与安装**：应用以清单 `idp.workspace.app/v1` 发布（名称、语义版本、标题、发布者、可选 H5 入口 URL、申请的桥能力、动作契约、可选配置 JSON Schema）。发布不可变：同名同版本再发布只在摘要（规范化 JSON 的 sha256）相同时幂等成功，否则 409；发布可被撤销（撤销后已安装的仍在但不可用）。安装把某版本装进工作空间并带配置（按清单的配置 Schema 校验，带 `revision` 与 If-Match）；每个工作空间每个应用一份安装，升级即改版本 | 应用是第三方代码，需可追溯、可撤销；配置错误应在安装时而非运行时发现 |
 | D3 | **工作收件箱是视图，不是决定**：生产者（角色 `ws-producer` 的服务：EER 侧适配器、HOST 侧适配器、应用后端）按 `(producer, externalRef)` 幂等地放入事项：种类 approval / task / run / notification，标题、摘要、权威对象引用 `ref {system, kind, id, url?}`、指派（主体与 / 或工作空间角色，均空 = 全体成员）、优先级、到期、可执行的动作（应用 + 动作 + 预置输入）、实体引用。只有生产者能把事项置为 resolved / withdrawn 并写结果；成员只能标记已读 / 归档（自己的视图）。成员从事项发起动作时，Workspace 把动作转给拥有者，**不**改事项状态——由拥有者确认后回写 | 架构基线："不可将 UI 缓存当作审批记录"；EER 无列表与事件接口，推入是唯一不伪造权威的方式 |
 | D4 | **动作契约**：清单中的动作声明输入 JSON Schema、目标与可调用的工作空间角色。调用 `POST /v1/workspaces/{ws}/actions/invoke`：校验成员资格、安装存在且发布未撤销、角色、输入 Schema（与事项预置输入合并，成员字段优先），再转发：`host.run` → HOST `POST /v1/agents/{agent}/runs`（AG-UI 输入：动作输入作为 user 消息，工作上下文的实体作为 context）；`eer.decision` → EER `POST /v1/executions/{id}/approval`（执行 id 取自事项 `ref`（system eer、kind execution）或输入的 `executionId`，actor 为调用者主体）；`webhook` → 应用后端 URL（HMAC-SHA256 签名 `Idp-Signature: t=…,v1=…`）。每次调用记录为 Invocation（输入摘要、目标、结果引用或错误），按 `Idempotency-Key` 幂等。下游凭据按目标配置：`forward`（转发调用者令牌，需身份提供方签发含下游 audience 的令牌）或 `static`（服务令牌文件）；令牌交换（RFC 8693）留到 M2 | 动作必须由拥有决定的系统执行；Workspace 只负责"谁、在哪、以什么输入、被谁接收" |
-| D5 | **工作上下文与应用桥**：每个成员在每个工作空间有一份工作上下文（实体引用、当前应用、线程、当前事项，带 `version`）。H5 应用在沙箱 iframe 中运行（`sandbox="allow-scripts allow-forms"`，不给 same-origin），与壳之间只走 `postMessage` 协议 `idp.bridge/v1`：请求 / 响应 / 事件三种消息；方法 `bridge.hello`、`context.get`、`context.set`、`actions.invoke`、`inbox.list`、`ui.notify`，事件 `context.changed`。壳只接受来自安装入口源（origin）的消息，只执行清单申请过的能力，绝不把用户令牌交给应用 | 第三方页面不可信；能力由清单声明并在安装时可见，桥是唯一通道 |
+| D5 | **工作上下文与应用桥**：每个成员在每个工作空间有一份工作上下文（实体引用、当前应用、线程、当前事项，带 `version`）。H5 应用在沙箱 iframe 中运行（`sandbox="allow-scripts allow-forms allow-same-origin"`：应用保留自己的源，桥才能核对来源，应用也能用自己的存储；不给顶层导航、弹窗与下载；应用入口与壳同源时壳拒绝装入，因为那时 same-origin 会让应用进入壳），与壳之间只走 `postMessage` 协议 `idp.bridge/v1`：请求 / 响应 / 事件三种消息；方法 `bridge.hello`、`context.get`、`context.set`、`actions.invoke`、`inbox.list`、`ui.notify`，事件 `context.changed`。壳只接受来自安装入口源（origin）的消息，只执行清单申请过的能力，绝不把用户令牌交给应用 | 第三方页面不可信；能力由清单声明并在安装时可见，桥是唯一通道 |
 | D6 | **身份与角色**：JWT（生产 JWKS，开发 HS256），声明 `tenant_id`、`roles`；角色 `ws-admin`（工作空间、应用、成员、安装）、`ws-member`（在所属工作空间里工作）、`ws-producer`（放入与结束事项）。成员资格由 Workspace 自己的成员表决定 | 与 HOST / CMI 相同的身份约定 |
 | D7 | **存储**：PostgreSQL，所有租户表 FORCE RLS，服务角色不得是超级用户或 BYPASSRLS；管理动作写审计 | 与 HOST / CMI 一致 |
 | D8 | **契约** `idp.telos.workspace` 1.0.0：AppManifest（含 ActionContract、Target）、AppRelease、Installation、InboxItem、WorkContext、Invocation、BridgeMessage、Envelope（错误）。生产者副本在 `api/contracts/`，实现侧一致性测试钉住，登记到 idp-contracts | 应用开发者、生产者与壳都依赖这些形状 |
@@ -55,3 +55,29 @@
 - 与真实 idp-host、idp-eer 的联调未做：EER 侧要由 T2 审批推入事项，需要 idp-eer 的生产者适配器；转发令牌模式要求身份提供方签发含下游 audience 的令牌（令牌交换留到 M2）。
 - 没有前端壳（M2 的 `apps/web`）；应用桥只以内存通道测试，未在浏览器 iframe 中实测。
 - EER 的 actor 取调用者主体；若 EER 的 (iss, sub) 映射给出不同的 actor id，决定会被 EER 以 403 拒绝（记录为失败调用）。
+
+## 6. M2 决策（2026-11-04）
+
+| # | 决策 | 理由 |
+|---|---|---|
+| D9 | **Web 壳**：`apps/web`（React 19 + Vite + TypeScript），与 `packages/bridge` 同属仓库根的 npm workspaces。构建产物由 Go 服务从 `IDP_WORKSPACE_WEB_DIR` 提供（`/` 与 `/assets/*`；入口页带 CSP：`default-src 'self'`，`frame-src` 限 https 与回环地址，`connect-src 'self'`），镜像内置该目录。壳的功能：工作空间切换、收件箱（含事项动作与确认）、应用启动器、应用框架（沙箱 iframe + 桥壳端：上下文读写、动作调用、收件箱列表、通知）。M2 的登录是开发模式下粘贴令牌（存 sessionStorage）；OIDC 授权码 + PKCE 留到 M3 | 前端与服务同版本发布、同源，避免 CORS 与令牌跨源；登录与身份提供方对接是独立的一块 |
+| D10 | **收件箱推送**：`GET /v1/workspaces/{ws}/inbox/stream` 以 SSE 推送调用者可见、在游标之后变化的事项（事件 `item`，id 为 `<微秒时间戳>:<itemId>`，支持 `Last-Event-ID` 续传），服务端每 2 秒查询一次、15 秒心跳。浏览器端用 fetch 读流（EventSource 不能带 Authorization 头） | 不引入消息中间件；每连接一条按索引的查询，成本可控 |
+| D11 | **运行结果入箱**：`host.run` 成功后，Workspace 以同一凭据跟随 `GET /v1/runs/{id}/events`（SSE）直到 `RUN_FINISHED` / `RUN_ERROR` 或 10 分钟，放入一项 `run`（生产者 `idp-workspace`，`externalRef = run:<runId>`，引用 host / run / id，只指派给调用者）：调用时即放入"运行中"，结束时更新为最后一段助手文本或错误；事项保持 open 供成员阅读后归档（它是通知，不是待决定的事）。跟随在进程内；重启时未完成的跟随丢失（不伪造结果） | 成员发起的 Agent 运行有结果可看，而不必回到 HOST；Workspace 只转述，不保存运行状态 |
+| D12 | **与真实 idp-host 联调**：`deploy/e2e.sh` 的 `HOST=1` 起 idp-host 镜像（及其确定性模型替身），Workspace 以 static 凭据（HOST 的开发令牌）调用；测试发布带 `host.run` 动作的应用，调用后在收件箱等到运行结果 | 证明 D4 / D11 在真实进程之间成立 |
+
+## 7. M2 实施结果（2026-11-04，WSL 实测）
+
+- D9：`apps/web`（React 19、Vite 7、TypeScript 严格模式）与 `packages/bridge` 组成仓库根的 npm workspaces；`deploy/build.sh` 构建壳并把 `dist` 装入镜像（`IDP_WORKSPACE_WEB_DIR`）。服务对非 `/api/`、`/v1/` 的 GET 提供壳：入口页 `Cache-Control: no-cache`、CSP（`default-src 'self'`、`frame-src https:` 与回环、`frame-ancestors 'none'`）、`X-Frame-Options: DENY`；`/assets/*` 不可变缓存；路径穿越回落到入口页；`/shell-config.json` 告诉壳是否开发模式。API 仍全部要求令牌。壳：工作空间切换、收件箱（优先级、实体、来源、动作按钮与 confirm、已读 / 归档）、应用导航、沙箱应用框架与桥、通知。
+- D5 修订：浏览器实测发现不带 `allow-same-origin` 的沙箱 frame 的源是不透明的 `"null"`，桥的来源核对会丢弃全部消息；改为 `allow-scripts allow-forms allow-same-origin`，并拒绝装入与壳同源的应用（那时 same-origin 才危险）。
+- D10：`GET /v1/workspaces/{ws}/inbox/stream`：首轮推送游标之后（或 `replay=open` 时全部）可见事项，之后每 2 秒查询变化，按 (itemId, version) 去重并保留 5 秒重叠窗口以免漏掉晚提交的事务；清除服务器写超时以维持长连接；浏览器端以 fetch 读流并按最后的事件 id 续传。
+- D11：`host.run` 成功后放入"运行中"事项并在后台跟随 HOST 的事件流；结束后同一事项（`run:<runId>`）更新为"finished / failed / result unavailable"与最后的助手文本或错误，只对调用者可见。
+- D12：`HOST=1 bash deploy/e2e.sh`：真实的 idp-host 镜像、worker 与模型替身；Workspace 以 HOST 的开发令牌（static）调用；四眼批准的 agent，经 Workspace 动作发起的运行在 HOST 上 COMPLETED，结果"Echo: Why is order 1001 late?"回到成员收件箱。
+- 浏览器冒烟（`BROWSER=1`，Playwright + Chromium，CI 中运行）：开发令牌登录、收件箱、经流实时到达的事项、第三方应用页（手写 `idp.bridge/v1`，不用 SDK）在 frame 中拿到工作空间与上下文、`inbox.list` 被 `CAPABILITY_DENIED`、动作失败码 `TARGET_UNAVAILABLE` 原样回到应用、通知出现在壳里、应用看到的任何应答都不含令牌。它还发现并修复了壳每次渲染新建 API 客户端导致的请求风暴（组件测试钉住）。
+
+**验证**：Go 单元（新增 runs）、集成（新增 inbox-stream、web-shell 两个场景，actions-go-to-the-owner 增加运行结果入箱）、前端（bridge 11 项、web 8 项、两者 `tsc --strict`）、镜像 + compose 端到端、浏览器冒烟、与真实 idp-host 的联调全部通过；`npm audit` 0。
+
+**局限（不标 PASS）**
+- 登录只有开发令牌；OIDC 授权码 + PKCE、应用令牌（Workspace 签发、受众为应用后端）、下游令牌交换留到 M3。
+- 运行跟随在进程内，重启时进行中的跟随丢失（事项停在"运行中"）；forward 模式下用户令牌在跟随期间过期也会如此。
+- 收件箱流是每连接轮询；大量并发连接时需要改为 LISTEN/NOTIFY 或消息总线。
+- 与 idp-eer 的联调仍待 EER 侧生产者适配器。

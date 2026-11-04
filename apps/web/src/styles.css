@@ -1,0 +1,33 @@
+:root { --navy: #0b2545; --ink: #1d2733; --muted: #6b7785; --line: #dde3ea; --bg: #f5f7fa; --accent: #13315c; --ok: #1b7f4b; --bad: #b42318; font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; color: var(--ink); background: var(--bg); }
+body { margin: 0; }
+button { font: inherit; border: 1px solid var(--accent); background: var(--accent); color: #fff; border-radius: 6px; padding: 4px 12px; cursor: pointer; }
+button.secondary { background: #fff; color: var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
+.shell { display: grid; grid-template-rows: auto auto 1fr; min-height: 100vh; }
+header { display: flex; gap: 12px; align-items: center; padding: 10px 20px; background: var(--navy); color: #fff; }
+header .brand { font-weight: 700; margin-right: auto; letter-spacing: .02em; }
+header select { font: inherit; padding: 3px 6px; border-radius: 6px; }
+nav { display: flex; gap: 6px; padding: 8px 20px; border-bottom: 1px solid var(--line); background: #fff; }
+nav button { background: #fff; color: var(--ink); border-color: transparent; }
+nav button.active { border-color: var(--accent); color: var(--accent); }
+.badge { margin-left: 6px; background: var(--bad); color: #fff; border-radius: 9px; padding: 0 6px; font-size: 12px; }
+main { padding: 16px 20px; }
+.muted { color: var(--muted); }
+.error { color: var(--bad); }
+.inbox { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; max-width: 900px; }
+.item { background: #fff; border: 1px solid var(--line); border-left: 4px solid var(--line); border-radius: 8px; padding: 10px 14px; }
+.item.unread { border-left-color: var(--accent); }
+.item.p-urgent { border-left-color: var(--bad); }
+.item-head { display: flex; gap: 8px; align-items: baseline; }
+.kind, .prio, .entity { font-size: 12px; border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; color: var(--muted); }
+.summary { margin: 6px 0; white-space: pre-wrap; }
+.meta { display: flex; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.actions { display: flex; gap: 8px; margin-top: 8px; }
+.app-frame { width: 100%; height: calc(100vh - 140px); border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.toasts { position: fixed; right: 16px; bottom: 16px; display: grid; gap: 8px; }
+.toast { background: var(--ink); color: #fff; padding: 8px 12px; border-radius: 6px; max-width: 360px; }
+.toast.success { background: var(--ok); }
+.toast.error { background: var(--bad); }
+.signin { max-width: 520px; margin: 12vh auto; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 24px; }
+.signin form { display: grid; gap: 10px; }
+.signin textarea { font: 12px ui-monospace, monospace; }

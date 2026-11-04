@@ -38,6 +38,9 @@ type Downstream struct {
 	Timeout  time.Duration
 }
 
+// Bearer is the credential this downstream is called with on behalf of p.
+func (d *Downstream) Bearer(p authorization.Principal) (string, error) { return d.bearer(p) }
+
 func (d *Downstream) bearer(p authorization.Principal) (string, error) {
 	switch d.Auth {
 	case AuthStatic:

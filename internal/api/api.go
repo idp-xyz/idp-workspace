@@ -23,6 +23,7 @@ import (
 	"idp-workspace/internal/canonical"
 	"idp-workspace/internal/dispatch"
 	"idp-workspace/internal/observability"
+	"idp-workspace/internal/runs"
 	"idp-workspace/internal/schema"
 	"idp-workspace/internal/transport"
 	"idp-workspace/internal/workspace"
@@ -41,9 +42,15 @@ type API struct {
 	Store      *postgres.Store
 	Auth       Verifier
 	Dispatcher *dispatch.Dispatcher
-	Log        *slog.Logger
-	Metrics    *observability.Metrics
-	Version    string
+	// Runs relays the results of host.run actions into the inbox (D11); nil = not followed.
+	Runs *runs.Follower
+	// WebDir holds the built web shell (D9); "" = the API only.
+	WebDir string
+	// DevMode tells the shell to offer development sign-in.
+	DevMode bool
+	Log     *slog.Logger
+	Metrics *observability.Metrics
+	Version string
 
 	invocations *observability.CounterVec
 }
@@ -59,9 +66,15 @@ func principalOf(r *http.Request) authorization.Principal {
 
 var open = map[string]bool{"/healthz": true, "/readyz": true, "/version": true}
 
+// isAPI reports whether a path belongs to the authenticated API; everything else is the web shell's
+// static files (D9), which carry no data.
+func isAPI(path string) bool {
+	return strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/v1/")
+}
+
 func (a *API) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if open[r.URL.Path] {
+		if open[r.URL.Path] || !isAPI(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -484,6 +497,7 @@ func (a *API) Handler() http.Handler {
 		return 200, map[string]any{"invocations": out}, err
 	}, member))
 	mux.Handle("POST /v1/workspaces/{ws}/actions/invoke", a.role(a.invoke, member))
+	mux.HandleFunc("GET /v1/workspaces/{ws}/inbox/stream", a.inboxStream)
 
 	// ---- producers (D3) ----
 	mux.Handle("POST /v1/workspaces/{ws}/inbox/items", a.role(func(r *http.Request, p authorization.Principal) (int, any, error) {
@@ -542,6 +556,10 @@ func (a *API) Handler() http.Handler {
 		out, err := a.Store.ListInbox(r.Context(), p.Tenant, w.ID, p.Subject, nil, postgres.InboxQuery{Status: status, Archived: true, Limit: limit, Producer: p.Subject})
 		return 200, map[string]any{"items": out}, err
 	}, producer))
+	mux.HandleFunc("GET /shell-config.json", func(w http.ResponseWriter, _ *http.Request) {
+		transport.WriteJSON(w, 200, map[string]any{"devMode": a.DevMode, "version": a.Version})
+	})
+	mux.HandleFunc("GET /", a.web)
 	return a.authenticate(mux)
 }
 

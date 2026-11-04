@@ -2,7 +2,7 @@
 PG_IMAGE ?= public.ecr.aws/docker/library/postgres:17-alpine
 PG_NAME  ?= idp-workspace-test-pg
 
-.PHONY: build test vet test-integration test-bridge pg-up pg-down
+.PHONY: build test vet test-integration test-bridge test-web pg-up pg-down
 
 build:
 	go build -o bin/ ./cmd/...
@@ -16,6 +16,12 @@ test: vet
 # The app bridge SDK (TypeScript, no dependencies): Node's built-in test runner with type stripping
 test-bridge:
 	cd packages/bridge && node --test --experimental-strip-types 'test/*.test.ts'
+
+# The frontend (npm workspaces): type check and tests of the bridge SDK and the web shell
+test-web:
+	npm ci --ignore-scripts --no-audit --no-fund
+	npm run typecheck
+	npm test
 
 test-integration: pg-up
 	@PORT=$$(docker port $(PG_NAME) 5432/tcp | head -1 | sed 's/.*://'); \
