@@ -1,0 +1,127 @@
+openapi: 3.1.0
+info:
+  title: IDP Workspace API
+  version: 0.1.0
+  description: >-
+    The enterprise work entry point (ADR-0001): workspaces and members, the app registry and
+    installations, the work inbox, work contexts and action invocation. Objects are defined by the
+    contract idp.telos.workspace 1.0.0 (api/contracts/schema.json); errors are {"error": Problem}.
+    Roles: ws-admin (administration; passes every role check except an action contract's roles),
+    ws-member (works in the workspaces it belongs to), ws-producer (services that put items into
+    inboxes and close them). {ws} is a workspace id or name; a non-member gets 404.
+  license: {name: PolyForm Noncommercial 1.0.0}
+servers: [{url: 'https://workspace.example'}]
+security: [{bearer: []}]
+components:
+  securitySchemes:
+    bearer: {type: http, scheme: bearer, bearerFormat: JWT, description: 'claims tenant_id and roles (configurable)'}
+  parameters:
+    ws: {name: ws, in: path, required: true, schema: {type: string}}
+  schemas:
+    Workspace: {$ref: 'contracts/schema.json#/$defs/Workspace'}
+    AppManifest: {$ref: 'contracts/schema.json#/$defs/AppManifest'}
+    AppRelease: {$ref: 'contracts/schema.json#/$defs/AppRelease'}
+    Installation: {$ref: 'contracts/schema.json#/$defs/Installation'}
+    InboxItem: {$ref: 'contracts/schema.json#/$defs/InboxItem'}
+    WorkContext: {$ref: 'contracts/schema.json#/$defs/WorkContext'}
+    Invocation: {$ref: 'contracts/schema.json#/$defs/Invocation'}
+    Problem: {$ref: 'contracts/schema.json#/$defs/Problem'}
+    Error: {type: object, required: [error], properties: {error: {$ref: '#/components/schemas/Problem'}}}
+  responses:
+    Error: {description: 'error (code in the body)', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+paths:
+  /healthz: {get: {security: [], summary: liveness, responses: {'200': {description: ok}}}}
+  /readyz: {get: {security: [], summary: 'readiness (database reachable)', responses: {'200': {description: ok}, '503': {$ref: '#/components/responses/Error'}}}}
+  /version: {get: {security: [], summary: service and version, responses: {'200': {description: ok}}}}
+
+  /api/v1/workspaces:
+    post:
+      summary: 'Create a workspace (D1); the creator becomes a member with role owner. ws-admin'
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [name, displayName], properties: {name: {type: string}, displayName: {type: string}}}}}}
+      responses: {'201': {description: created, content: {application/json: {schema: {$ref: '#/components/schemas/Workspace'}}}}, '409': {$ref: '#/components/responses/Error'}, '422': {$ref: '#/components/responses/Error'}}
+  /api/v1/workspaces/{ws}/members:
+    parameters: [{$ref: '#/components/parameters/ws'}]
+    get: {summary: 'List members and their workspace roles. ws-admin', responses: {'200': {description: '{members}'}}}
+  /api/v1/workspaces/{ws}/members/{subject}:
+    parameters: [{$ref: '#/components/parameters/ws'}, {name: subject, in: path, required: true, schema: {type: string}}]
+    put: {summary: 'Add a member or replace its workspace roles (lowercase names). ws-admin', requestBody: {required: true, content: {application/json: {schema: {type: object, properties: {roles: {type: array, items: {type: string}}}}}}}, responses: {'200': {description: member}}}
+    delete: {summary: 'Remove a member. ws-admin', responses: {'204': {description: removed}, '404': {$ref: '#/components/responses/Error'}}}
+  /api/v1/apps:
+    post:
+      summary: 'Publish an app release (D2). Immutable: the same name and version again is 200 only with the same digest (sha256 of the canonical manifest), else 409. Manifests, action input schemas and config schemas are checked (422 INVALID_MANIFEST). ws-admin'
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/AppManifest'}}}}
+      responses: {'201': {description: published, content: {application/json: {schema: {$ref: '#/components/schemas/AppRelease'}}}}, '200': {description: 'already published (same digest)'}, '409': {$ref: '#/components/responses/Error'}, '422': {$ref: '#/components/responses/Error'}}
+    get: {summary: 'List releases (?name=). ws-admin', responses: {'200': {description: '{releases}'}}}
+  /api/v1/apps/{name}/{version}:
+    get: {summary: 'Read a release. ws-admin', parameters: [{name: name, in: path, required: true, schema: {type: string}}, {name: version, in: path, required: true, schema: {type: string}}], responses: {'200': {description: release, content: {application/json: {schema: {$ref: '#/components/schemas/AppRelease'}}}}}}
+  /api/v1/apps/{name}/{version}/revoke:
+    post: {summary: 'Revoke a release (reason required): installations of it stay but are neither offered nor invocable. ws-admin', parameters: [{name: name, in: path, required: true, schema: {type: string}}, {name: version, in: path, required: true, schema: {type: string}}], requestBody: {required: true, content: {application/json: {schema: {type: object, required: [reason], properties: {reason: {type: string}}}}}}, responses: {'200': {description: revoked}, '409': {$ref: '#/components/responses/Error'}}}
+  /api/v1/workspaces/{ws}/installations/{app}:
+    parameters: [{$ref: '#/components/parameters/ws'}, {name: app, in: path, required: true, schema: {type: string}}]
+    put:
+      summary: 'Install a published release or move the installation to another version or configuration (If-Match: revision). The configuration is validated against the manifest config schema (422 INVALID_CONFIG). ws-admin'
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [version], properties: {version: {type: string}, config: {type: object}}}}}}
+      responses: {'201': {description: installed, content: {application/json: {schema: {$ref: '#/components/schemas/Installation'}}}}, '200': {description: updated}, '409': {$ref: '#/components/responses/Error'}, '422': {$ref: '#/components/responses/Error'}}
+    delete: {summary: 'Uninstall. ws-admin', responses: {'204': {description: removed}, '404': {$ref: '#/components/responses/Error'}}}
+  /api/v1/workspaces/{ws}/invocations:
+    parameters: [{$ref: '#/components/parameters/ws'}]
+    get: {summary: 'All invocations of the workspace (?subject=, ?limit=). ws-admin', responses: {'200': {description: '{invocations}'}}}
+  /api/v1/audit:
+    get: {summary: 'Administrative audit of the tenant. ws-admin', responses: {'200': {description: '{events}'}}}
+
+  /v1/workspaces:
+    get: {summary: 'The workspaces the caller belongs to (administrators: all). ws-member', responses: {'200': {description: '{workspaces}'}}}
+  /v1/workspaces/{ws}:
+    parameters: [{$ref: '#/components/parameters/ws'}]
+    get: {summary: 'The workspace and the caller''s workspace roles. ws-member', responses: {'200': {description: '{workspace, roles, member}'}, '404': {$ref: '#/components/responses/Error'}}}
+  /v1/workspaces/{ws}/apps:
+    parameters: [{$ref: '#/components/parameters/ws'}]
+    get: {summary: 'Installed apps whose release is published, with manifest, digest and entry origin (what the shell frames and binds the bridge to). ws-member', responses: {'200': {description: '{apps: [{installation, manifest, digest, origin}]}'}}}
+  /v1/workspaces/{ws}/inbox:
+    parameters: [{$ref: '#/components/parameters/ws'}]
+    get:
+      summary: 'The caller''s inbox (D3): items assigned to it, to one of its workspace roles, or to nobody in particular; open by default (?status=open|resolved|withdrawn|all, ?kind=, ?archived=true, ?limit=); urgent first. ws-member'
+      responses: {'200': {description: '{items}', content: {application/json: {schema: {type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/InboxItem'}}}}}}}}
+  /v1/workspaces/{ws}/inbox/{id}:
+    parameters: [{$ref: '#/components/parameters/ws'}, {name: id, in: path, required: true, schema: {type: string}}]
+    get: {summary: 'One item (not visible = 404). ws-member', responses: {'200': {description: item, content: {application/json: {schema: {$ref: '#/components/schemas/InboxItem'}}}}}}
+  /v1/workspaces/{ws}/inbox/{id}/marks:
+    parameters: [{$ref: '#/components/parameters/ws'}, {name: id, in: path, required: true, schema: {type: string}}]
+    post: {summary: 'Set or clear the caller''s own read / archived marks; never the item''s status. ws-member', requestBody: {required: true, content: {application/json: {schema: {type: object, properties: {read: {type: boolean}, archived: {type: boolean}}}}}}, responses: {'200': {description: item}}}
+  /v1/workspaces/{ws}/context:
+    parameters: [{$ref: '#/components/parameters/ws'}]
+    get: {summary: 'The caller''s work context (version 0 = never set). ws-member', responses: {'200': {description: context, content: {application/json: {schema: {$ref: '#/components/schemas/WorkContext'}}}}}}
+    put: {summary: 'Replace it (If-Match: version; 0 = must not exist yet). itemId must be an item the caller sees. ws-member', requestBody: {required: true, content: {application/json: {schema: {type: object, properties: {entities: {type: array}, app: {type: string}, thread: {type: string}, itemId: {type: string}}}}}}, responses: {'200': {description: context}, '409': {$ref: '#/components/responses/Error'}}}
+  /v1/workspaces/{ws}/actions/invoke:
+    parameters: [{$ref: '#/components/parameters/ws'}]
+    post:
+      summary: >-
+        Invoke an app's action (D4). Checked in order: membership, installation (404 APP_NOT_INSTALLED),
+        published release (409 APP_REVOKED), action (404 ACTION_NOT_FOUND), the contract's workspace roles
+        (403), the item when itemId is given (open: 409 ITEM_CLOSED; offering this action: 409
+        ACTION_NOT_OFFERED; its preset input under the caller's), the input schema (422 INVALID_INPUT).
+        Then forwarded: host.run -> idp-host POST /v1/agents/{agent}/runs; eer.decision -> idp-eer POST
+        /v1/executions/{id}/approval (the item's execution or input executionId); webhook -> the app's
+        backend, signed (Idp-Signature: t=,v1= HMAC-SHA256). The attempt is recorded; a failure answers
+        with {error, invocation} (409 TARGET_REJECTED, 502 TARGET_UNAVAILABLE). Idempotency-Key replays
+        the recorded invocation (Idempotent-Replayed: true); the same key with another body is 409. The
+        inbox item is not changed: its producer closes it. ws-member
+      parameters: [{name: Idempotency-Key, in: header, schema: {type: string, maxLength: 200}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [app, action], properties: {app: {type: string}, action: {type: string}, input: {type: object}, itemId: {type: string}}}}}}
+      responses: {'201': {description: forwarded, content: {application/json: {schema: {$ref: '#/components/schemas/Invocation'}}}}, '200': {description: replayed}, '403': {$ref: '#/components/responses/Error'}, '404': {$ref: '#/components/responses/Error'}, '409': {description: 'refused before forwarding, or by the target ({error, invocation})'}, '422': {$ref: '#/components/responses/Error'}, '502': {description: 'target unavailable ({error, invocation})'}}
+  /v1/workspaces/{ws}/invocations:
+    parameters: [{$ref: '#/components/parameters/ws'}]
+    get: {summary: 'The caller''s invocations. ws-member', responses: {'200': {description: '{invocations}'}}}
+
+  /v1/workspaces/{ws}/inbox/items:
+    parameters: [{$ref: '#/components/parameters/ws'}]
+    post:
+      summary: 'Put an item (D3): created (201), or for the same (producer, externalRef) an open item is updated (200, version + 1); a closed one is not reopened (409). ws-producer'
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [externalRef, kind, title, ref], properties: {externalRef: {type: string}, kind: {type: string}, title: {type: string}, summary: {type: string}, ref: {type: object}, assignees: {type: object}, priority: {type: string}, dueAt: {type: string, format: date-time}, actions: {type: array}, entities: {type: array}}}}}}
+      responses: {'201': {description: created, content: {application/json: {schema: {$ref: '#/components/schemas/InboxItem'}}}}, '200': {description: updated}, '409': {$ref: '#/components/responses/Error'}, '422': {$ref: '#/components/responses/Error'}}
+  /v1/workspaces/{ws}/inbox/close:
+    parameters: [{$ref: '#/components/parameters/ws'}]
+    post: {summary: 'Resolve (outcome required) or withdraw an open item, by itemId or externalRef; only its producer. ws-producer', requestBody: {required: true, content: {application/json: {schema: {type: object, required: [status], properties: {itemId: {type: string}, externalRef: {type: string}, status: {type: string, enum: [resolved, withdrawn]}, outcome: {type: string}, note: {type: string}}}}}}, responses: {'200': {description: item}, '403': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}}}
+  /v1/workspaces/{ws}/inbox/produced:
+    parameters: [{$ref: '#/components/parameters/ws'}]
+    get: {summary: 'The items the caller produced, any status (?status=). ws-producer', responses: {'200': {description: '{items}'}}}

@@ -1,0 +1,55 @@
+# idp-workspace development topology: the workspace image + PostgreSQL. Driven by deploy/e2e.sh,
+# which generates the secrets in .local/compose.env. The host sees 127.0.0.1:8560 (API) and 9566
+# (metrics). DEV ONLY: HS256 development tokens, plaintext http on the private network.
+name: idp-workspace-go
+
+x-hardened: &hardened
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ['no-new-privileges:true']
+
+networks:
+  edge: {}
+  data: {internal: true}
+
+volumes:
+  pgdata: {}
+
+services:
+  postgres:
+    image: ${IDP_PG_IMAGE:-public.ecr.aws/docker/library/postgres:17-alpine}
+    networks: [data]
+    environment:
+      POSTGRES_PASSWORD: ${IDP_PG_OWNER_PASSWORD:?run deploy/e2e.sh}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U postgres']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  workspace-admin:
+    <<: *hardened
+    image: ${IDP_WORKSPACE_IMAGE:-idp-workspace:dev}
+    profiles: [tools]
+    networks: [data]
+    environment:
+      IDP_MIGRATION_DATABASE_URL: postgres://postgres:${IDP_PG_OWNER_PASSWORD:?run deploy/e2e.sh}@postgres:5432/idp_workspace?sslmode=disable
+      IDP_APP_DB_PASSWORD: ${IDP_APP_DB_PASSWORD:?run deploy/e2e.sh}
+      IDP_DEV_MODE: 'true'
+      IDP_DEV_SECRET: ${IDP_DEV_SECRET:?run deploy/e2e.sh}
+    depends_on: {postgres: {condition: service_healthy}}
+
+  workspace:
+    <<: *hardened
+    image: ${IDP_WORKSPACE_IMAGE:-idp-workspace:dev}
+    command: [serve]
+    networks: [edge, data]
+    ports: ['127.0.0.1:8560:8560', '127.0.0.1:9566:9566']
+    environment:
+      IDP_DATABASE_URL: postgres://idp_ws_svc:${IDP_APP_DB_PASSWORD:?run deploy/e2e.sh}@postgres:5432/idp_workspace?sslmode=disable
+      IDP_WORKSPACE_LISTEN: 0.0.0.0:8560
+      IDP_DEV_MODE: 'true'
+      IDP_DEV_SECRET: ${IDP_DEV_SECRET:?run deploy/e2e.sh}
+      IDP_METRICS_LISTEN: 0.0.0.0:9566
+    depends_on: {postgres: {condition: service_healthy}}

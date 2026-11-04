@@ -1,0 +1,728 @@
+{
+  "description": "idp.telos.workspace 1.0.0 的示例：每一个都是 idp-workspace 的 Go 值序列化的结果（API 返回或应用桥发送的形状）。",
+  "generatedBy": "go test ./internal/workspace -run TestContract -update",
+  "examples": [
+    {
+      "definition": "Workspace",
+      "value": {
+        "workspaceId": "0a1b2c3d-0000-4000-8000-000000000001",
+        "name": "us-ops",
+        "displayName": "US operations",
+        "createdBy": "alice",
+        "createdAt": "2026-11-04T09:00:00Z"
+      }
+    },
+    {
+      "definition": "AppManifest",
+      "value": {
+        "schemaVersion": "idp.workspace.app/v1",
+        "name": "orders",
+        "version": "1.2.0",
+        "title": "Orders",
+        "description": "Order desk: holds, reviews and approvals.",
+        "publisher": "IDP Parcel",
+        "entry": {
+          "url": "https://orders.apps.example/workspace"
+        },
+        "capabilities": [
+          "context.read",
+          "context.write",
+          "actions.invoke",
+          "inbox.read",
+          "ui.notify"
+        ],
+        "actions": [
+          {
+            "name": "order.review",
+            "title": "Ask the order assistant",
+            "input": {
+              "type": "object",
+              "required": [
+                "message"
+              ],
+              "properties": {
+                "message": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4000
+                }
+              },
+              "additionalProperties": false
+            },
+            "target": {
+              "kind": "host.run",
+              "agent": "order-assistant"
+            }
+          },
+          {
+            "name": "approval.approve",
+            "title": "Approve",
+            "input": {
+              "type": "object",
+              "properties": {
+                "executionId": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            },
+            "target": {
+              "kind": "eer.decision",
+              "decision": "approve"
+            },
+            "roles": [
+              "approver"
+            ],
+            "confirm": true
+          },
+          {
+            "name": "approval.reject",
+            "title": "Reject",
+            "input": {
+              "type": "object",
+              "properties": {
+                "executionId": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            },
+            "target": {
+              "kind": "eer.decision",
+              "decision": "reject"
+            },
+            "roles": [
+              "approver"
+            ],
+            "confirm": true
+          },
+          {
+            "name": "order.hold",
+            "title": "Put an order on hold",
+            "input": {
+              "type": "object",
+              "required": [
+                "orderId",
+                "reason"
+              ],
+              "properties": {
+                "orderId": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                },
+                "reason": {
+                  "type": "string",
+                  "maxLength": 500
+                }
+              },
+              "additionalProperties": false
+            },
+            "target": {
+              "kind": "webhook",
+              "url": "https://orders.apps.example/hooks/hold"
+            }
+          }
+        ],
+        "config": {
+          "schema": {
+            "type": "object",
+            "required": [
+              "region"
+            ],
+            "properties": {
+              "region": {
+                "enum": [
+                  "us",
+                  "eu"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    {
+      "definition": "AppManifest",
+      "value": {
+        "schemaVersion": "idp.workspace.app/v1",
+        "name": "notifier",
+        "version": "0.1.0",
+        "title": "Notifier",
+        "publisher": "IDP",
+        "capabilities": [],
+        "actions": [
+          {
+            "name": "notify",
+            "title": "Notify the on-call",
+            "input": {
+              "type": "object"
+            },
+            "target": {
+              "kind": "webhook",
+              "url": "http://127.0.0.1:9000/notify"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": "AppRelease",
+      "value": {
+        "name": "orders",
+        "version": "1.2.0",
+        "digest": "sha256:abababababababababababababababababababababababababababababababab",
+        "status": "published",
+        "manifest": {
+          "schemaVersion": "idp.workspace.app/v1",
+          "name": "orders",
+          "version": "1.2.0",
+          "title": "Orders",
+          "description": "Order desk: holds, reviews and approvals.",
+          "publisher": "IDP Parcel",
+          "entry": {
+            "url": "https://orders.apps.example/workspace"
+          },
+          "capabilities": [
+            "context.read",
+            "context.write",
+            "actions.invoke",
+            "inbox.read",
+            "ui.notify"
+          ],
+          "actions": [
+            {
+              "name": "order.review",
+              "title": "Ask the order assistant",
+              "input": {
+                "type": "object",
+                "required": [
+                  "message"
+                ],
+                "properties": {
+                  "message": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4000
+                  }
+                },
+                "additionalProperties": false
+              },
+              "target": {
+                "kind": "host.run",
+                "agent": "order-assistant"
+              }
+            },
+            {
+              "name": "approval.approve",
+              "title": "Approve",
+              "input": {
+                "type": "object",
+                "properties": {
+                  "executionId": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "target": {
+                "kind": "eer.decision",
+                "decision": "approve"
+              },
+              "roles": [
+                "approver"
+              ],
+              "confirm": true
+            },
+            {
+              "name": "approval.reject",
+              "title": "Reject",
+              "input": {
+                "type": "object",
+                "properties": {
+                  "executionId": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "target": {
+                "kind": "eer.decision",
+                "decision": "reject"
+              },
+              "roles": [
+                "approver"
+              ],
+              "confirm": true
+            },
+            {
+              "name": "order.hold",
+              "title": "Put an order on hold",
+              "input": {
+                "type": "object",
+                "required": [
+                  "orderId",
+                  "reason"
+                ],
+                "properties": {
+                  "orderId": {
+                    "type": "string",
+                    "pattern": "^[0-9]+$"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 500
+                  }
+                },
+                "additionalProperties": false
+              },
+              "target": {
+                "kind": "webhook",
+                "url": "https://orders.apps.example/hooks/hold"
+              }
+            }
+          ],
+          "config": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "region"
+              ],
+              "properties": {
+                "region": {
+                  "enum": [
+                    "us",
+                    "eu"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "publishedBy": "alice",
+        "publishedAt": "2026-11-04T09:00:00Z"
+      }
+    },
+    {
+      "definition": "AppRelease",
+      "value": {
+        "name": "orders",
+        "version": "1.1.0",
+        "digest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "status": "revoked",
+        "manifest": {
+          "schemaVersion": "idp.workspace.app/v1",
+          "name": "orders",
+          "version": "1.1.0",
+          "title": "Orders",
+          "description": "Order desk: holds, reviews and approvals.",
+          "publisher": "IDP Parcel",
+          "entry": {
+            "url": "https://orders.apps.example/workspace"
+          },
+          "capabilities": [
+            "context.read",
+            "context.write",
+            "actions.invoke",
+            "inbox.read",
+            "ui.notify"
+          ],
+          "actions": [
+            {
+              "name": "order.review",
+              "title": "Ask the order assistant",
+              "input": {
+                "type": "object",
+                "required": [
+                  "message"
+                ],
+                "properties": {
+                  "message": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4000
+                  }
+                },
+                "additionalProperties": false
+              },
+              "target": {
+                "kind": "host.run",
+                "agent": "order-assistant"
+              }
+            },
+            {
+              "name": "approval.approve",
+              "title": "Approve",
+              "input": {
+                "type": "object",
+                "properties": {
+                  "executionId": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "target": {
+                "kind": "eer.decision",
+                "decision": "approve"
+              },
+              "roles": [
+                "approver"
+              ],
+              "confirm": true
+            },
+            {
+              "name": "approval.reject",
+              "title": "Reject",
+              "input": {
+                "type": "object",
+                "properties": {
+                  "executionId": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "target": {
+                "kind": "eer.decision",
+                "decision": "reject"
+              },
+              "roles": [
+                "approver"
+              ],
+              "confirm": true
+            },
+            {
+              "name": "order.hold",
+              "title": "Put an order on hold",
+              "input": {
+                "type": "object",
+                "required": [
+                  "orderId",
+                  "reason"
+                ],
+                "properties": {
+                  "orderId": {
+                    "type": "string",
+                    "pattern": "^[0-9]+$"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 500
+                  }
+                },
+                "additionalProperties": false
+              },
+              "target": {
+                "kind": "webhook",
+                "url": "https://orders.apps.example/hooks/hold"
+              }
+            }
+          ],
+          "config": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "region"
+              ],
+              "properties": {
+                "region": {
+                  "enum": [
+                    "us",
+                    "eu"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "publishedBy": "alice",
+        "publishedAt": "2026-11-01T09:00:00Z",
+        "revocation": {
+          "by": "alice",
+          "at": "2026-11-04T08:00:00Z",
+          "reason": "approves without the amount check"
+        }
+      }
+    },
+    {
+      "definition": "Installation",
+      "value": {
+        "installationId": "2c3d4e5f-0000-4000-8000-000000000003",
+        "workspaceId": "0a1b2c3d-0000-4000-8000-000000000001",
+        "app": "orders",
+        "version": "1.2.0",
+        "config": {
+          "region": "us"
+        },
+        "revision": 2,
+        "installedBy": "alice",
+        "installedAt": "2026-11-03T09:00:00Z",
+        "updatedAt": "2026-11-04T09:00:00Z",
+        "releaseStatus": "published"
+      }
+    },
+    {
+      "definition": "InboxItem",
+      "value": {
+        "itemId": "1b2c3d4e-0000-4000-8000-000000000002",
+        "workspaceId": "0a1b2c3d-0000-4000-8000-000000000001",
+        "producer": "svc-eer",
+        "externalRef": "execution:7f3a/approval",
+        "kind": "approval",
+        "title": "Approve the refund for order 1001",
+        "summary": "Refund of 420.00 USD exceeds the agent's limit.",
+        "ref": {
+          "system": "eer",
+          "kind": "execution",
+          "id": "execution:7f3a",
+          "url": "https://eer.example/executions/execution:7f3a"
+        },
+        "assignees": {
+          "subjects": [],
+          "roles": [
+            "approver"
+          ]
+        },
+        "priority": "high",
+        "dueAt": "2026-11-04T13:00:00Z",
+        "actions": [
+          {
+            "app": "orders",
+            "action": "approval.approve",
+            "label": "Approve"
+          },
+          {
+            "app": "orders",
+            "action": "approval.reject",
+            "label": "Reject"
+          }
+        ],
+        "entities": [
+          {
+            "type": "order",
+            "id": "1001"
+          }
+        ],
+        "status": "open",
+        "version": 1,
+        "createdAt": "2026-11-04T09:00:00Z",
+        "updatedAt": "2026-11-04T09:00:00Z"
+      }
+    },
+    {
+      "definition": "InboxItem",
+      "value": {
+        "itemId": "1b2c3d4e-0000-4000-8000-000000000002",
+        "workspaceId": "0a1b2c3d-0000-4000-8000-000000000001",
+        "producer": "svc-eer",
+        "externalRef": "execution:7f3a/approval",
+        "kind": "approval",
+        "title": "Approve the refund for order 1001",
+        "summary": "Refund of 420.00 USD exceeds the agent's limit.",
+        "ref": {
+          "system": "eer",
+          "kind": "execution",
+          "id": "execution:7f3a",
+          "url": "https://eer.example/executions/execution:7f3a"
+        },
+        "assignees": {
+          "subjects": [],
+          "roles": [
+            "approver"
+          ]
+        },
+        "priority": "high",
+        "dueAt": "2026-11-04T13:00:00Z",
+        "actions": [
+          {
+            "app": "orders",
+            "action": "approval.approve",
+            "label": "Approve"
+          },
+          {
+            "app": "orders",
+            "action": "approval.reject",
+            "label": "Reject"
+          }
+        ],
+        "entities": [
+          {
+            "type": "order",
+            "id": "1001"
+          }
+        ],
+        "status": "resolved",
+        "resolution": {
+          "outcome": "approved",
+          "by": "svc-eer",
+          "at": "2026-11-04T11:00:00Z",
+          "note": "approved by bob in the workspace"
+        },
+        "version": 2,
+        "createdAt": "2026-11-04T09:00:00Z",
+        "updatedAt": "2026-11-04T11:00:00Z",
+        "readAt": "2026-11-04T10:00:00Z"
+      }
+    },
+    {
+      "definition": "WorkContext",
+      "value": {
+        "workspaceId": "0a1b2c3d-0000-4000-8000-000000000001",
+        "subject": "bob",
+        "entities": [
+          {
+            "type": "order",
+            "id": "1001"
+          },
+          {
+            "type": "customer",
+            "id": "carol"
+          }
+        ],
+        "app": "orders",
+        "thread": "thr_ops_42",
+        "itemId": "1b2c3d4e-0000-4000-8000-000000000002",
+        "version": 3,
+        "updatedAt": "2026-11-04T09:00:00Z"
+      }
+    },
+    {
+      "definition": "Invocation",
+      "value": {
+        "invocationId": "3d4e5f60-0000-4000-8000-000000000004",
+        "workspaceId": "0a1b2c3d-0000-4000-8000-000000000001",
+        "subject": "bob",
+        "app": "orders",
+        "appVersion": "1.2.0",
+        "action": "approval.approve",
+        "itemId": "1b2c3d4e-0000-4000-8000-000000000002",
+        "inputDigest": "sha256:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+        "target": {
+          "kind": "eer.decision",
+          "decision": "approve"
+        },
+        "status": "succeeded",
+        "result": {
+          "accepted": true,
+          "decision": "approved",
+          "httpStatus": 202,
+          "id": "execution:7f3a",
+          "kind": "execution",
+          "system": "eer"
+        },
+        "createdAt": "2026-11-04T10:00:00Z"
+      }
+    },
+    {
+      "definition": "Invocation",
+      "value": {
+        "invocationId": "4e5f6071-0000-4000-8000-000000000005",
+        "workspaceId": "0a1b2c3d-0000-4000-8000-000000000001",
+        "subject": "bob",
+        "app": "orders",
+        "appVersion": "1.2.0",
+        "action": "order.review",
+        "inputDigest": "sha256:1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e",
+        "target": {
+          "kind": "host.run",
+          "agent": "order-assistant"
+        },
+        "status": "failed",
+        "error": {
+          "code": "TARGET_UNAVAILABLE",
+          "message": "https://host.example unreachable"
+        },
+        "createdAt": "2026-11-04T10:00:00Z"
+      }
+    },
+    {
+      "definition": "BridgeMessage",
+      "value": {
+        "protocol": "idp.bridge/v1",
+        "id": "1",
+        "type": "request",
+        "method": "bridge.hello",
+        "params": {
+          "app": "orders",
+          "version": "1.2.0"
+        }
+      }
+    },
+    {
+      "definition": "BridgeMessage",
+      "value": {
+        "protocol": "idp.bridge/v1",
+        "id": "1",
+        "type": "response",
+        "result": {
+          "capabilities": [
+            "context.read",
+            "actions.invoke"
+          ],
+          "locale": "zh-CN",
+          "protocol": "idp.bridge/v1",
+          "theme": "light",
+          "workspace": {
+            "name": "us-ops",
+            "workspaceId": "0a1b2c3d-0000-4000-8000-000000000001"
+          }
+        }
+      }
+    },
+    {
+      "definition": "BridgeMessage",
+      "value": {
+        "protocol": "idp.bridge/v1",
+        "id": "2",
+        "type": "request",
+        "method": "actions.invoke",
+        "params": {
+          "action": "order.hold",
+          "input": {
+            "orderId": "1001",
+            "reason": "address check"
+          }
+        }
+      }
+    },
+    {
+      "definition": "BridgeMessage",
+      "value": {
+        "protocol": "idp.bridge/v1",
+        "id": "3",
+        "type": "response",
+        "error": {
+          "code": "CAPABILITY_DENIED",
+          "message": "the app did not request inbox.read"
+        }
+      }
+    },
+    {
+      "definition": "BridgeMessage",
+      "value": {
+        "protocol": "idp.bridge/v1",
+        "type": "event",
+        "event": "context.changed",
+        "data": {
+          "entities": [
+            {
+              "id": "1002",
+              "type": "order"
+            }
+          ],
+          "version": 4
+        }
+      }
+    },
+    {
+      "definition": "Problem",
+      "value": {
+        "code": "ACTION_NOT_OFFERED",
+        "message": "the item does not offer orders/order.hold"
+      }
+    }
+  ]
+}

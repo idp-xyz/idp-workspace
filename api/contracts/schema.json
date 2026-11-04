@@ -1,0 +1,1129 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "urn:idp:telos:workspace:1.0.0",
+ "title": "idp.telos.workspace 1.0.0",
+ "description": "idp-workspace（企业工作入口）对外发布的契约（ADR-0001 D8）：Workspace、AppManifest（含 ActionContract、Target）、AppRelease、Installation、InboxItem、WorkContext、Invocation、BridgeMessage（应用桥 idp.bridge/v1）与 Problem。生产者是 idp-workspace，权威副本在 idp-workspace/api/contracts/，由 go test ./internal/workspace -run TestContract 保证与实现一致；idp-contracts 中的副本只能与之逐字节相同。JSON Schema 只描述形状与可本地判定的规则；成员资格、能力授予、动作角色与事项可见性由服务判定。",
+ "oneOf": [
+  {
+   "$ref": "#/$defs/Workspace"
+  },
+  {
+   "$ref": "#/$defs/AppManifest"
+  },
+  {
+   "$ref": "#/$defs/AppRelease"
+  },
+  {
+   "$ref": "#/$defs/Installation"
+  },
+  {
+   "$ref": "#/$defs/InboxItem"
+  },
+  {
+   "$ref": "#/$defs/WorkContext"
+  },
+  {
+   "$ref": "#/$defs/Invocation"
+  },
+  {
+   "$ref": "#/$defs/BridgeMessage"
+  },
+  {
+   "$ref": "#/$defs/Problem"
+  }
+ ],
+ "$defs": {
+  "Workspace": {
+   "title": "Workspace",
+   "description": "工作空间（D1）：租户内一个团队工作的地方；成员在其中看到收件箱、应用与工作上下文。",
+   "x-idp-telos-owner": "idp.telos.workspace",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "workspaceId",
+    "name",
+    "displayName",
+    "createdBy",
+    "createdAt"
+   ],
+   "properties": {
+    "workspaceId": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "name": {
+     "type": "string",
+     "pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"
+    },
+    "displayName": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 200
+    },
+    "createdBy": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 256
+    },
+    "createdAt": {
+     "type": "string",
+     "format": "date-time"
+    },
+    "archivedAt": {
+     "type": "string",
+     "format": "date-time"
+    }
+   }
+  },
+  "AppManifest": {
+   "title": "AppManifest",
+   "description": "应用清单 idp.workspace.app/v1（D2）：名称、语义版本、可选 H5 入口、向应用桥申请的能力、动作契约、可选配置 Schema。发布后不可变，摘要是规范化 JSON 的 sha256。",
+   "x-idp-telos-owner": "idp.telos.workspace",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "schemaVersion",
+    "name",
+    "version",
+    "title",
+    "publisher",
+    "capabilities",
+    "actions"
+   ],
+   "properties": {
+    "schemaVersion": {
+     "const": "idp.workspace.app/v1"
+    },
+    "name": {
+     "type": "string",
+     "pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"
+    },
+    "version": {
+     "type": "string",
+     "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$",
+     "maxLength": 64
+    },
+    "title": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 200
+    },
+    "description": {
+     "type": "string",
+     "maxLength": 2000
+    },
+    "publisher": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 200
+    },
+    "entry": {
+     "$ref": "#/$defs/AppEntry"
+    },
+    "capabilities": {
+     "type": "array",
+     "items": {
+      "enum": [
+       "context.read",
+       "context.write",
+       "actions.invoke",
+       "inbox.read",
+       "ui.notify"
+      ]
+     },
+     "uniqueItems": true
+    },
+    "actions": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/ActionContract"
+     },
+     "maxItems": 50
+    },
+    "config": {
+     "$ref": "#/$defs/ConfigSpec"
+    }
+   }
+  },
+  "AppEntry": {
+   "title": "AppEntry",
+   "description": "应用页面的地址（https；仅回环地址允许 http）。壳只接受来自它的源（origin）的桥消息。",
+   "x-idp-telos-owner": "idp.telos.workspace",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "url"
+   ],
+   "properties": {
+    "url": {
+     "type": "string",
+     "pattern": "^(https://|http://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]+)?/?)[^\\s#]*$",
+     "maxLength": 2048
+    }
+   }
+  },
+  "ConfigSpec": {
+   "title": "ConfigSpec",
+   "description": "安装配置须满足的 JSON Schema（对象 Schema；不得引用外部文档）。",
+   "x-idp-telos-owner": "idp.telos.workspace",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "schema"
+   ],
+   "properties": {
+    "schema": {
+     "type": "object",
+     "required": [
+      "type"
+     ],
+     "properties": {
+      "type": {
+       "const": "object"
+      }
+     }
+    }
+   }
+  },
+  "ActionContract": {
+   "title": "ActionContract",
+   "description": "动作契约（D4）：成员可经应用做的一件事。输入按 input（对象 JSON Schema）校验后转给拥有决定的系统；roles 非空时只有持这些工作空间角色的成员可调用（管理员也不例外）。",
+   "x-idp-telos-owner": "idp.telos.workspace",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "name",
+    "title",
+    "input",
+    "target"
+   ],
+   "properties": {
+    "name": {
+     "type": "string",
+     "pattern": "^[a-z0-9]([a-z0-9.-]{0,62}[a-z0-9])?$"
+    },
+    "title": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 200
+    },
+    "description": {
+     "type": "string",
+     "maxLength": 2000
+    },
+    "input": {
+     "type": "object",
+     "required": [
+      "type"
+     ],
+     "properties": {
+      "type": {
+       "const": "object"
+      }
+     }
+    },
+    "target": {
+     "$ref": "#/$defs/Target"
+    },
+    "roles": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"
+     },
+     "uniqueItems": true,
+     "maxItems": 20
+    },
+    "confirm": {
+     "type": "boolean"
+    }
+   }
+  },
+  "Target": {
+   "title": "Target",
+   "description": "动作的去向：host.run（在 idp-host 上以 agent 启动 AgentRun）、eer.decision（对 idp-eer 执行的 T2 审批作 approve / reject）、webhook（以 HMAC 签名 POST 到应用自己的后端）。",
+   "x-idp-telos-owner": "idp.telos.workspace",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "kind"
+   ],
+   "properties": {
+    "kind": {
+     "enum": [
+      "host.run",
+      "eer.decision",
+      "webhook"
+     ]
+    },
+    "agent": {
+     "type": "string",
+     "pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"
+    },
+    "decision": {
+     "enum": [
+      "approve",
+      "reject"
+     ]
+    },
+    "url": {
+     "type": "string",
+     "pattern": "^(https://|http://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]+)?/?)[^\\s#]*$",
+     "maxLength": 2048
+    }
+   },
+   "allOf": [
+    {
+     "if": {
+      "properties": {
+       "kind": {
+        "const": "host.run"
+       }
+      }
+     },
+     "then": {
+      "required": [
+       "agent"
+      ],
+      "not": {
+       "anyOf": [
+        {
+         "required": [
+          "decision"
+         ]
+        },
+        {
+         "required": [
+          "url"
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "kind": {
+        "const": "eer.decision"
+       }
+      }
+     },
+     "then": {
+      "required": [
+       "decision"
+      ],
+      "not": {
+       "anyOf": [
+        {
+         "required": [
+          "agent"
+         ]
+        },
+        {
+         "required": [
+          "url"
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "kind": {
+        "const": "webhook"
+       }
+      }
+     },
+     "then": {
+      "required": [
+       "url"
+      ],
+      "not": {
+       "anyOf": [
+        {
+         "required": [
+          "agent"
+         ]
+        },
+        {
+         "required": [
+          "decision"
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ]
+  },
+  "Revocation": {
+   "title": "Revocation",
+   "description": "谁在何时以何理由撤销了发布。",
+   "x-idp-telos-owner": "idp.telos.workspace",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "by",
+    "at",
+    "reason"
+   ],
+   "properties": {
+    "by": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 256
+    },
+    "at": {
+     "type": "string",
+     "format": "date-time"
+    },
+    "reason": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 500
+    }
+   }
+  },
+  "AppRelease": {
+   "title": "AppRelease",
+   "description": "已发布的应用版本（D2）：清单、摘要与状态；撤销后已安装的仍在但不可用。",
+   "x-idp-telos-owner": "idp.telos.workspace",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "name",
+    "version",
+    "digest",
+    "status",
+    "manifest",
+    "publishedBy",
+    "publishedAt"
+   ],
+   "properties": {
+    "name": {
+     "type": "string",
+     "pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"
+    },
+    "version": {
+     "type": "string",
+     "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$",
+     "maxLength": 64
+    },
+    "digest": {
+     "type": "string",
+     "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "status": {
+     "enum": [
+      "published",
+      "revoked"
+     ]
+    },
+    "manifest": {
+     "$ref": "#/$defs/AppManifest"
+    },
+    "publishedBy": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 256
+    },
+    "publishedAt": {
+     "type": "string",
+     "format": "date-time"
+    },
+    "revocation": {
+     "$ref": "#/$defs/Revocation"
+    }
+   }
+  },
+  "Installation": {
+   "title": "Installation",
+   "description": "装进工作空间的应用版本与其配置（D2）；revision 随每次修改加一（If-Match）；releaseStatus 是所装版本的发布状态。",
+   "x-idp-telos-owner": "idp.telos.workspace",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "installationId",
+    "workspaceId",
+    "app",
+    "version",
+    "config",
+    "revision",
+    "installedBy",
+    "installedAt",
+    "updatedAt",
+    "releaseStatus"
+   ],
+   "properties": {
+    "installationId": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "workspaceId": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "app": {
+     "type": "string",
+     "pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"
+    },
+    "version": {
+     "type": "string",
+     "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$",
+     "maxLength": 64
+    },
+    "config": {
+     "type": "object"
+    },
+    "revision": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "installedBy": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 256
+    },
+    "installedAt": {
+     "type": "string",
+     "format": "date-time"
+    },
+    "updatedAt": {
+     "type": "string",
+     "format": "date-time"
+    },
+    "releaseStatus": {
+     "enum": [
+      "published",
+      "revoked"
+     ]
+    }
+   }
+  },
+  "Ref": {
+   "title": "Ref",
+   "description": "事项所指的权威对象：system 为 eer、host、cmi、external 或 app:<name>。",
+   "x-idp-telos-owner": "idp.telos.workspace",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "system",
+    "kind",
+    "id"
+   ],
+   "properties": {
+    "system": {
+     "type": "string",
+     "pattern": "^(eer|host|cmi|external|app:[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?)$"
+    },
+    "kind": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 64
+    },
+    "id": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 256
+    },
+    "url": {
+     "type": "string",
+     "maxLength": 2048
+    }
+   }
+  },
+  "Assignees": {
+   "title": "Assignees",
+   "description": "谁看得到事项：主体与 / 或工作空间角色；两者皆空 = 全体成员。",
+   "x-idp-telos-owner": "idp.telos.workspace",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "subjects",
+    "roles"
+   ],
+   "properties": {
+    "subjects": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+     },
+     "maxItems": 100
+    },
+    "roles": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"
+     },
+     "maxItems": 20
+    }
+   }
+  },
+  "ItemAction": {
+   "title": "ItemAction",
+   "description": "成员可从事项发起的动作：应用的某个动作，带预置输入（与成员输入合并，成员字段优先）。",
+   "x-idp-telos-owner": "idp.telos.workspace",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "app",
+    "action"
+   ],
+   "properties": {
+    "app": {
+     "type": "string",
+     "pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"
+    },
+    "action": {
+     "type": "string",
+     "pattern": "^[a-z0-9]([a-z0-9.-]{0,62}[a-z0-9])?$"
+    },
+    "label": {
+     "type": "string",
+     "maxLength": 100
+    },
+    "input": {
+     "type": "object"
+    }
+   }
+  },
+  "Resolution": {
+   "title": "Resolution",
+   "description": "生产者结束事项时写下的结果。",
+   "x-idp-telos-owner": "idp.telos.workspace",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "outcome",
+    "by",
+    "at"
+   ],
+   "properties": {
+    "outcome": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 64
+    },
+    "by": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 256
+    },
+    "at": {
+     "type": "string",
+     "format": "date-time"
+    },
+    "note": {
+     "type": "string",
+     "maxLength": 2000
+    }
+   }
+  },
+  "Entity": {
+   "title": "Entity",
+   "description": "业务对象引用（与 idp.telos.cmi 的 Entity 同形）。",
+   "x-idp-telos-owner": "idp.telos.workspace",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "type",
+    "id"
+   ],
+   "properties": {
+    "type": {
+     "type": "string",
+     "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
+    },
+    "id": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 256
+    }
+   }
+  },
+  "InboxItem": {
+   "title": "InboxItem",
+   "description": "工作收件箱的一项（D3）：另一个系统所拥有对象的视图。只有生产者能创建、更新与结束它；成员只能标记已读 / 归档（readAt / archivedAt 是调用者自己的标记）。",
+   "x-idp-telos-owner": "idp.telos.workspace",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "itemId",
+    "workspaceId",
+    "producer",
+    "externalRef",
+    "kind",
+    "title",
+    "ref",
+    "assignees",
+    "priority",
+    "actions",
+    "entities",
+    "status",
+    "version",
+    "createdAt",
+    "updatedAt"
+   ],
+   "properties": {
+    "itemId": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "workspaceId": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "producer": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 256
+    },
+    "externalRef": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 256
+    },
+    "kind": {
+     "enum": [
+      "approval",
+      "task",
+      "run",
+      "notification"
+     ]
+    },
+    "title": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 300
+    },
+    "summary": {
+     "type": "string",
+     "maxLength": 4000
+    },
+    "ref": {
+     "$ref": "#/$defs/Ref"
+    },
+    "assignees": {
+     "$ref": "#/$defs/Assignees"
+    },
+    "priority": {
+     "enum": [
+      "low",
+      "normal",
+      "high",
+      "urgent"
+     ]
+    },
+    "dueAt": {
+     "type": "string",
+     "format": "date-time"
+    },
+    "actions": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/ItemAction"
+     },
+     "maxItems": 10
+    },
+    "entities": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/Entity"
+     },
+     "maxItems": 32
+    },
+    "status": {
+     "enum": [
+      "open",
+      "resolved",
+      "withdrawn"
+     ]
+    },
+    "resolution": {
+     "$ref": "#/$defs/Resolution"
+    },
+    "version": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "createdAt": {
+     "type": "string",
+     "format": "date-time"
+    },
+    "updatedAt": {
+     "type": "string",
+     "format": "date-time"
+    },
+    "readAt": {
+     "type": "string",
+     "format": "date-time"
+    },
+    "archivedAt": {
+     "type": "string",
+     "format": "date-time"
+    }
+   }
+  },
+  "WorkContext": {
+   "title": "WorkContext",
+   "description": "成员在工作空间里正在处理的东西（D5）：业务对象、前台应用、线程、当前事项；version 为 0 表示从未设置。",
+   "x-idp-telos-owner": "idp.telos.workspace",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "workspaceId",
+    "subject",
+    "entities",
+    "version",
+    "updatedAt"
+   ],
+   "properties": {
+    "workspaceId": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "subject": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 256
+    },
+    "entities": {
+     "type": "array",
+     "items": {
+      "$ref": "#/$defs/Entity"
+     },
+     "maxItems": 32
+    },
+    "app": {
+     "type": "string",
+     "pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"
+    },
+    "thread": {
+     "type": "string",
+     "maxLength": 256
+    },
+    "itemId": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "version": {
+     "type": "integer",
+     "minimum": 0
+    },
+    "updatedAt": {
+     "type": "string",
+     "format": "date-time"
+    }
+   }
+  },
+  "Problem": {
+   "title": "Problem",
+   "description": "稳定的错误码与可安全展示的消息（HTTP 错误体为 {\"error\": Problem}）。",
+   "x-idp-telos-owner": "idp.telos.workspace",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "code",
+    "message"
+   ],
+   "properties": {
+    "code": {
+     "type": "string",
+     "pattern": "^[A-Za-z0-9_]{1,64}$"
+    },
+    "message": {
+     "type": "string",
+     "maxLength": 2000
+    }
+   }
+  },
+  "Invocation": {
+   "title": "Invocation",
+   "description": "一次动作调用及其结果（D4）：输入只记摘要；result 是目标的引用（运行 id、审批决定、webhook 应答），error 是失败原因。",
+   "x-idp-telos-owner": "idp.telos.workspace",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "invocationId",
+    "workspaceId",
+    "subject",
+    "app",
+    "appVersion",
+    "action",
+    "inputDigest",
+    "target",
+    "status",
+    "createdAt"
+   ],
+   "properties": {
+    "invocationId": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "workspaceId": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "subject": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 256
+    },
+    "app": {
+     "type": "string",
+     "pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"
+    },
+    "appVersion": {
+     "type": "string",
+     "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$",
+     "maxLength": 64
+    },
+    "action": {
+     "type": "string",
+     "pattern": "^[a-z0-9]([a-z0-9.-]{0,62}[a-z0-9])?$"
+    },
+    "itemId": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "inputDigest": {
+     "type": "string",
+     "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "target": {
+     "$ref": "#/$defs/Target"
+    },
+    "status": {
+     "enum": [
+      "succeeded",
+      "failed"
+     ]
+    },
+    "result": {
+     "type": "object"
+    },
+    "error": {
+     "$ref": "#/$defs/Problem"
+    },
+    "createdAt": {
+     "type": "string",
+     "format": "date-time"
+    }
+   },
+   "allOf": [
+    {
+     "if": {
+      "properties": {
+       "status": {
+        "const": "failed"
+       }
+      }
+     },
+     "then": {
+      "required": [
+       "error"
+      ]
+     },
+     "else": {
+      "not": {
+       "required": [
+        "error"
+       ]
+      }
+     }
+    }
+   ]
+  },
+  "BridgeMessage": {
+   "title": "BridgeMessage",
+   "description": "应用桥 idp.bridge/v1 的一条 postMessage 消息（D5）：request（应用 → 壳，带 id、method、params）、response（壳 → 应用，回带 id 与 result 或 error）、event（壳 → 应用，带 event 与 data）。壳只接受来自安装入口源的消息，只执行清单申请过的能力，从不把用户令牌交给应用。",
+   "x-idp-telos-owner": "idp.telos.workspace",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "protocol",
+    "type"
+   ],
+   "properties": {
+    "protocol": {
+     "const": "idp.bridge/v1"
+    },
+    "id": {
+     "type": "string",
+     "pattern": "^[A-Za-z0-9_.:-]{1,64}$"
+    },
+    "type": {
+     "enum": [
+      "request",
+      "response",
+      "event"
+     ]
+    },
+    "method": {
+     "enum": [
+      "bridge.hello",
+      "context.get",
+      "context.set",
+      "actions.invoke",
+      "inbox.list",
+      "ui.notify"
+     ]
+    },
+    "params": {
+     "type": "object"
+    },
+    "result": {},
+    "error": {
+     "$ref": "#/$defs/Problem"
+    },
+    "event": {
+     "enum": [
+      "context.changed",
+      "theme.changed"
+     ]
+    },
+    "data": {}
+   },
+   "allOf": [
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "request"
+       }
+      }
+     },
+     "then": {
+      "required": [
+       "id",
+       "method"
+      ],
+      "not": {
+       "anyOf": [
+        {
+         "required": [
+          "result"
+         ]
+        },
+        {
+         "required": [
+          "error"
+         ]
+        },
+        {
+         "required": [
+          "event"
+         ]
+        },
+        {
+         "required": [
+          "data"
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "response"
+       }
+      }
+     },
+     "then": {
+      "required": [
+       "id"
+      ],
+      "oneOf": [
+       {
+        "required": [
+         "result"
+        ]
+       },
+       {
+        "required": [
+         "error"
+        ]
+       }
+      ],
+      "not": {
+       "anyOf": [
+        {
+         "required": [
+          "method"
+         ]
+        },
+        {
+         "required": [
+          "params"
+         ]
+        },
+        {
+         "required": [
+          "event"
+         ]
+        },
+        {
+         "required": [
+          "data"
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "type": {
+        "const": "event"
+       }
+      }
+     },
+     "then": {
+      "required": [
+       "event"
+      ],
+      "not": {
+       "anyOf": [
+        {
+         "required": [
+          "id"
+         ]
+        },
+        {
+         "required": [
+          "method"
+         ]
+        },
+        {
+         "required": [
+          "params"
+         ]
+        },
+        {
+         "required": [
+          "result"
+         ]
+        },
+        {
+         "required": [
+          "error"
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "@idp-workspace/bridge",
+  "version": "0.1.0",
+  "description": "IDP Workspace app bridge (idp.bridge/v1): the shell host that enforces origin and capabilities, the app client, and webhook signature verification. No dependencies.",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./shell": "./src/shell.ts",
+    "./app": "./src/app.ts",
+    "./webhook": "./src/webhook.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "test": "node --test --experimental-strip-types 'test/*.test.ts'",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "5.9.3"
+  }
+}

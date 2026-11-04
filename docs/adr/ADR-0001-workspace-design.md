@@ -1,0 +1,57 @@
+# ADR-0001：IDP Workspace 的设计
+
+状态：已接受（2026-11-04）
+范围：idp-workspace（企业工作入口：工作空间、应用注册与安装、工作收件箱、工作上下文、动作契约、应用桥）
+依据：IDP TELOS 系统架构 v1.0（五大独立子系统）、仓库工程架构 v1.0（idp-workspace = UI / Experience，所有任务状态只经 HOST / EER API 访问）、idp-host ADR-0001、idp-eer 运行时 API（`contracts/openapi/runtime-v1.yaml`）、idp-cmi ADR-0001
+
+## 1. 背景
+
+架构基线把 Workspace 定为企业的工作入口："独立企业应用平台，不是简单 AI 聊天 UI"，组成为 App Shell、App Registry、H5 App Runtime、App Bridge SDK、Work Context、Work Inbox、Action Contract、审批与人机协作。它权威持有的是工作空间、应用安装与配置、界面与协作状态、工作 Inbox；它**不得**持有业务领域事务、Agent Harness 状态、EER Checkpoint，也不得把界面缓存当作审批记录。允许的调用：Workspace → HOST（Agent API / AG-UI），Workspace → EER（Task / Approval 公共 API）。
+
+开工前核对了两个下游的公开接口（2026-11-04）：
+
+- **idp-host**：`POST /v1/agents/{ref}/runs` 以 AG-UI `RunAgentInput` 建运行（`Idempotency-Key`），`GET /v1/runs/{id}` 读状态，`GET /v1/runs/{id}/events` 以 SSE 流式给出事件；JWT 的 `tenant_id` 与 `roles`（`host-user`）声明决定身份。没有租户级事件流，也没有跨线程的待确认列表。
+- **idp-eer**：`POST /v1/executions/{id}/approval` 以 `{tenant_id, decision: approved|rejected, actor_id}` 对 T2 审批作决定（202；409 不在等待审批；403 actor 与令牌不符）；租户与 actor 由运行时配置按 (`iss`, `sub`) 映射。**没有**列出待审批或执行的接口，也没有对外的事件订阅或 webhook。
+
+因此 Workspace 不能"拉"出全企业的待办；收件箱必须由拥有事项的系统**推入**。
+
+## 2. 决策
+
+| # | 决策 | 理由 |
+|---|---|---|
+| D1 | **单一 Go 服务 + 前端包**：`idp-workspace` 是一个 Go 二进制（API，PostgreSQL），前端以 TypeScript 包交付（M1：`packages/bridge` 应用桥 SDK；M2：`apps/web` 壳）。工作空间是租户内的命名空间，成员带工作空间内角色（小写名），租户管理员可管理全部工作空间 | 与 HOST / CMI 同一套运维形态（单二进制、RLS、静态镜像）；前端与后端独立发布 |
+| D2 | **应用注册与安装**：应用以清单 `idp.workspace.app/v1` 发布（名称、语义版本、标题、发布者、可选 H5 入口 URL、申请的桥能力、动作契约、可选配置 JSON Schema）。发布不可变：同名同版本再发布只在摘要（规范化 JSON 的 sha256）相同时幂等成功，否则 409；发布可被撤销（撤销后已安装的仍在但不可用）。安装把某版本装进工作空间并带配置（按清单的配置 Schema 校验，带 `revision` 与 If-Match）；每个工作空间每个应用一份安装，升级即改版本 | 应用是第三方代码，需可追溯、可撤销；配置错误应在安装时而非运行时发现 |
+| D3 | **工作收件箱是视图，不是决定**：生产者（角色 `ws-producer` 的服务：EER 侧适配器、HOST 侧适配器、应用后端）按 `(producer, externalRef)` 幂等地放入事项：种类 approval / task / run / notification，标题、摘要、权威对象引用 `ref {system, kind, id, url?}`、指派（主体与 / 或工作空间角色，均空 = 全体成员）、优先级、到期、可执行的动作（应用 + 动作 + 预置输入）、实体引用。只有生产者能把事项置为 resolved / withdrawn 并写结果；成员只能标记已读 / 归档（自己的视图）。成员从事项发起动作时，Workspace 把动作转给拥有者，**不**改事项状态——由拥有者确认后回写 | 架构基线："不可将 UI 缓存当作审批记录"；EER 无列表与事件接口，推入是唯一不伪造权威的方式 |
+| D4 | **动作契约**：清单中的动作声明输入 JSON Schema、目标与可调用的工作空间角色。调用 `POST /v1/workspaces/{ws}/actions/invoke`：校验成员资格、安装存在且发布未撤销、角色、输入 Schema（与事项预置输入合并，成员字段优先），再转发：`host.run` → HOST `POST /v1/agents/{agent}/runs`（AG-UI 输入：动作输入作为 user 消息，工作上下文的实体作为 context）；`eer.decision` → EER `POST /v1/executions/{id}/approval`（执行 id 取自事项 `ref`（system eer、kind execution）或输入的 `executionId`，actor 为调用者主体）；`webhook` → 应用后端 URL（HMAC-SHA256 签名 `Idp-Signature: t=…,v1=…`）。每次调用记录为 Invocation（输入摘要、目标、结果引用或错误），按 `Idempotency-Key` 幂等。下游凭据按目标配置：`forward`（转发调用者令牌，需身份提供方签发含下游 audience 的令牌）或 `static`（服务令牌文件）；令牌交换（RFC 8693）留到 M2 | 动作必须由拥有决定的系统执行；Workspace 只负责"谁、在哪、以什么输入、被谁接收" |
+| D5 | **工作上下文与应用桥**：每个成员在每个工作空间有一份工作上下文（实体引用、当前应用、线程、当前事项，带 `version`）。H5 应用在沙箱 iframe 中运行（`sandbox="allow-scripts allow-forms"`，不给 same-origin），与壳之间只走 `postMessage` 协议 `idp.bridge/v1`：请求 / 响应 / 事件三种消息；方法 `bridge.hello`、`context.get`、`context.set`、`actions.invoke`、`inbox.list`、`ui.notify`，事件 `context.changed`。壳只接受来自安装入口源（origin）的消息，只执行清单申请过的能力，绝不把用户令牌交给应用 | 第三方页面不可信；能力由清单声明并在安装时可见，桥是唯一通道 |
+| D6 | **身份与角色**：JWT（生产 JWKS，开发 HS256），声明 `tenant_id`、`roles`；角色 `ws-admin`（工作空间、应用、成员、安装）、`ws-member`（在所属工作空间里工作）、`ws-producer`（放入与结束事项）。成员资格由 Workspace 自己的成员表决定 | 与 HOST / CMI 相同的身份约定 |
+| D7 | **存储**：PostgreSQL，所有租户表 FORCE RLS，服务角色不得是超级用户或 BYPASSRLS；管理动作写审计 | 与 HOST / CMI 一致 |
+| D8 | **契约** `idp.telos.workspace` 1.0.0：AppManifest（含 ActionContract、Target）、AppRelease、Installation、InboxItem、WorkContext、Invocation、BridgeMessage、Envelope（错误）。生产者副本在 `api/contracts/`，实现侧一致性测试钉住，登记到 idp-contracts | 应用开发者、生产者与壳都依赖这些形状 |
+
+## 3. 里程碑
+
+- **M1**（本 ADR）：服务（工作空间与成员、应用注册与安装、收件箱、工作上下文、动作调用与三种目标）、契约 1.0.0、`packages/bridge`（壳端与应用端，零依赖 TypeScript，Node 内置测试）、单元 / 契约 / 集成测试（假 HOST、假 EER、假 webhook）、镜像构建、CI。
+- **M2**：`apps/web` 壳（React：收件箱、应用启动器、应用框架与桥）、应用令牌（Workspace 签发的短期、受众为应用后端的令牌）、收件箱实时推送（SSE）、HOST 运行结果自动入箱、下游令牌交换、与真实 idp-host 的 compose 联调。
+- **之后**：EER 侧生产者适配器（属 idp-eer：T2 审批进入 Waiting 时推入 Workspace），需 EER 自己的 ADR。
+
+## 4. 不做
+
+- 不持有审批、运行、任务的状态（D3）；不缓存下游对象当作事实。
+- 不做通用 API 网关：动作目标只有三种，且都按清单声明。
+- 不在 Workspace 内做 Agent 推理或上下文检索：那是 HOST 与 CMI。
+
+## 5. M1 实施结果（2026-11-04，WSL 实测）
+
+- D1、D6、D7：单一 Go 服务（`cmd/idp-workspace`：serve / migrate / ensure-login / seed-tenant / dev-token），PostgreSQL 九张租户表全部 FORCE RLS，服务角色为超级用户或 BYPASSRLS 时拒绝启动；工作空间创建者成为 owner 成员；非成员访问工作空间一律 404。
+- D2：发布按规范化清单的 sha256 判定幂等（键序与空白不同的同一清单得到同一摘要），同版本异内容 409；清单、动作输入与配置 Schema 在发布时编译（只允许对象 Schema，拒绝外部 `$ref`），入口与 webhook 必须 https（回环地址除外）；撤销后安装保留但不出现在成员的应用列表、不可调用、不可再安装。
+- D3：事项按 `(producer, externalRef)` upsert（开放时 version + 1，已结束 409）；可见性 = 指派主体、指派角色与成员的工作空间角色相交，或无指派；结束只限生产者；成员标记只影响自己。
+- D4：调用顺序为成员资格 → 安装与发布状态 → 动作 → 契约角色（管理员不豁免）→ 事项（开放、提供该动作、预置输入合并）→ 输入 Schema → 转发；失败以 `{error, invocation}` 应答并记录；`Idempotency-Key` 按请求哈希重放或 409。`host.run` 以调用者令牌（forward）建运行、run id 即幂等键、工作上下文的实体与线程进入 AG-UI 输入；`eer.decision` 以 `{tenant_id, decision, actor_id = 调用者}` 调用 EER，执行 id 取自事项引用或输入（两者不一致时 422）；`webhook` 以 `Idp-Signature` 签名、从不携带用户令牌、不跟随重定向。
+- D5：`packages/bridge`：协议解析与契约逐项一致（测试读取 `schema.json` 的方法与事件枚举）；壳端忽略其他源与其他 frame 的消息、未申请能力的请求以 `CAPABILITY_DENIED` 拒绝、处理器内部错误不外泄；应用端只认壳的源、请求超时与关闭时拒绝；webhook 签名在 Go 与 TypeScript 两端用同一向量钉住。
+- D8：契约 `idp.telos.workspace` 1.0.0（19 个定义），示例由 Go 值生成，闭合性与 Go 结构逐字段一致，拒绝用例覆盖清单、事项、桥消息与调用记录。
+
+**验证**：单元（schema、dispatch、config、契约）、集成（workspaces-and-members、app-registry、installations、inbox-is-a-view、work-context、actions-go-to-the-owner、revoked-and-uninstalled、audit）、应用桥 11 项（Node 24、`tsc --strict`）、镜像构建与 compose 端到端全部通过。
+
+**局限（不标 PASS）**
+- 与真实 idp-host、idp-eer 的联调未做：EER 侧要由 T2 审批推入事项，需要 idp-eer 的生产者适配器；转发令牌模式要求身份提供方签发含下游 audience 的令牌（令牌交换留到 M2）。
+- 没有前端壳（M2 的 `apps/web`）；应用桥只以内存通道测试，未在浏览器 iframe 中实测。
+- EER 的 actor 取调用者主体；若 EER 的 (iss, sub) 映射给出不同的 actor id，决定会被 EER 以 403 拒绝（记录为失败调用）。

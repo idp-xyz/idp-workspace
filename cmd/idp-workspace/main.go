@@ -1,0 +1,234 @@
+// Command idp-workspace is the IDP Workspace: workspaces, the app registry and installations, the
+// work inbox, work contexts and action invocation (ADR-0001).
+//
+//	idp-workspace [serve]                          run the API
+//	idp-workspace migrate                          apply schema migrations (owner connection)
+//	idp-workspace ensure-login USER                create/update a login role in idp_ws_app; password from IDP_APP_DB_PASSWORD[_FILE]
+//	idp-workspace seed-tenant SLUG [ID]            create a tenant, print TENANT_ID=<id>
+//	idp-workspace dev-token TENANT SUBJECT ROLE..  print a development token (dev mode only)
+//
+// Environment:
+//
+//	IDP_DATABASE_URL             service connection (a member of idp_ws_app, never a superuser)
+//	IDP_MIGRATION_DATABASE_URL   schema owner connection (migrate, ensure-login, seed-tenant)
+//	IDP_WORKSPACE_LISTEN         default 127.0.0.1:8560
+//	IDP_WORKSPACE_CONFIG         optional YAML: action targets (idp-host, idp-eer) and the webhook secret (ADR-0001 D4)
+//	IDP_DEV_MODE                 "true": HS256 development tokens
+//	IDP_WORKSPACE_ISSUER / IDP_WORKSPACE_AUDIENCE   accepted tokens (default idp-workspace-dev / idp-workspace)
+//	IDP_WORKSPACE_JWKS_URL       production keys; IDP_DEV_SECRET[_FILE] (>= 32 bytes) in dev mode instead
+//	IDP_WORKSPACE_TENANT_CLAIM / IDP_WORKSPACE_ROLES_CLAIM   claims (default tenant_id / roles)
+//	IDP_WORKSPACE_TLS_CERT_FILE / IDP_WORKSPACE_TLS_KEY_FILE   serve HTTPS
+//	IDP_IDENTITY_CA_FILE         extra trusted CAs for the JWKS endpoint
+//	IDP_METRICS_LISTEN           serve Prometheus metrics (/metrics) on this address; off when unset
+//	IDP_LOG_LEVEL                debug | info | warn | error
+//	OTEL_EXPORTER_OTLP_ENDPOINT ...   OTLP/HTTP trace export (off without an endpoint)
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"idp-workspace/adapters/identity"
+	"idp-workspace/adapters/store/postgres"
+	"idp-workspace/internal/api"
+	"idp-workspace/internal/config"
+	"idp-workspace/internal/dispatch"
+	"idp-workspace/internal/observability"
+	"idp-workspace/internal/transport"
+)
+
+var version = "0.1.0-dev"
+
+func env(key, def string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return def
+}
+
+func secret(key string) string {
+	if v := env(key, ""); v != "" {
+		return v
+	}
+	if f := env(key+"_FILE", ""); f != "" {
+		if b, err := os.ReadFile(f); err == nil {
+			return strings.TrimSpace(string(b))
+		}
+	}
+	return ""
+}
+
+func profile() identity.Profile {
+	return identity.Profile{Issuer: env("IDP_WORKSPACE_ISSUER", "idp-workspace-dev"), Audience: env("IDP_WORKSPACE_AUDIENCE", "idp-workspace"), JWKSURL: env("IDP_WORKSPACE_JWKS_URL", ""),
+		TenantClaim: env("IDP_WORKSPACE_TENANT_CLAIM", "tenant_id"), RolesClaim: env("IDP_WORKSPACE_ROLES_CLAIM", "roles")}
+}
+
+func main() {
+	log := observability.NewLogger(os.Stdout, env("IDP_LOG_LEVEL", "info"))
+	cmd := "serve"
+	if len(os.Args) > 1 {
+		cmd = os.Args[1]
+	}
+	var err error
+	switch cmd {
+	case "serve":
+		err = serve(log)
+	case "migrate":
+		var applied []string
+		applied, err = postgres.Migrate(context.Background(), env("IDP_MIGRATION_DATABASE_URL", ""))
+		for _, a := range applied {
+			fmt.Println("applied", a)
+		}
+	case "ensure-login":
+		if len(os.Args) < 3 {
+			err = errors.New("usage: idp-workspace ensure-login USER")
+			break
+		}
+		err = postgres.EnsureLogin(context.Background(), env("IDP_MIGRATION_DATABASE_URL", ""), os.Args[2], secret("IDP_APP_DB_PASSWORD"))
+	case "seed-tenant":
+		if len(os.Args) < 3 {
+			err = errors.New("usage: idp-workspace seed-tenant SLUG [ID]")
+			break
+		}
+		id := ""
+		if len(os.Args) > 3 {
+			id = os.Args[3]
+		}
+		var out string
+		if out, err = postgres.SeedTenant(context.Background(), env("IDP_MIGRATION_DATABASE_URL", ""), id, os.Args[2]); err == nil {
+			fmt.Println("TENANT_ID=" + out)
+		}
+	case "dev-token":
+		if len(os.Args) < 5 || env("IDP_DEV_MODE", "false") != "true" {
+			err = errors.New("usage: idp-workspace dev-token TENANT SUBJECT ROLE... (dev mode only)")
+			break
+		}
+		var tok string
+		tok, err = identity.DevToken([]byte(secret("IDP_DEV_SECRET")), profile(), os.Args[3], os.Args[2], os.Args[4:], 12*time.Hour)
+		fmt.Println(tok)
+	default:
+		err = fmt.Errorf("unknown command %q", cmd)
+	}
+	if err != nil {
+		log.Error(cmd+" failed", "error", err)
+		os.Exit(1)
+	}
+}
+
+func downstream(d *config.Downstream) (*dispatch.Downstream, error) {
+	tlsCfg, err := transport.ClientTLS(d.CAFile, "", "")
+	if err != nil {
+		return nil, err
+	}
+	out := &dispatch.Downstream{Endpoint: d.Endpoint, Auth: d.Auth, Timeout: d.Timeout, HTTP: &http.Client{Transport: &http.Transport{Proxy: nil, TLSClientConfig: tlsCfg}}}
+	if d.Auth == dispatch.AuthStatic {
+		out.Token = d.Token
+	}
+	return out, nil
+}
+
+func serve(log *slog.Logger) error {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	tp, stopTracing, err := observability.Setup("idp-workspace", version, log)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		fctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = stopTracing(fctx)
+	}()
+	dev := env("IDP_DEV_MODE", "false") == "true"
+	identityTLS, err := transport.ClientTLS(env("IDP_IDENTITY_CA_FILE", ""), "", "")
+	if err != nil {
+		return fmt.Errorf("IDP_IDENTITY_CA_FILE: %w", err)
+	}
+	prof := profile()
+	var verifier *identity.Verifier
+	switch {
+	case prof.JWKSURL != "":
+		verifier = identity.NewVerifier(prof, &identity.JWKS{URL: prof.JWKSURL, HTTP: &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{Proxy: nil, TLSClientConfig: identityTLS}}, TTL: 10 * time.Minute, MinRefresh: 30 * time.Second})
+	case dev && secret("IDP_DEV_SECRET") != "":
+		if verifier, err = identity.NewDevVerifier(prof, []byte(secret("IDP_DEV_SECRET"))); err != nil {
+			return err
+		}
+	default:
+		return errors.New("configure IDP_WORKSPACE_JWKS_URL (or, in dev mode, IDP_DEV_SECRET)")
+	}
+	cfg, err := config.Load(env("IDP_WORKSPACE_CONFIG", ""))
+	if err != nil {
+		return fmt.Errorf("IDP_WORKSPACE_CONFIG: %w", err)
+	}
+	d := &dispatch.Dispatcher{}
+	if h := cfg.Targets.Host; h != nil {
+		if d.Host, err = downstream(h); err != nil {
+			return fmt.Errorf("targets.host: %w", err)
+		}
+	}
+	if e := cfg.Targets.EER; e != nil {
+		if d.EER, err = downstream(&e.Downstream); err != nil {
+			return fmt.Errorf("targets.eer: %w", err)
+		}
+		d.EERTenant = e.TenantID
+	}
+	if w := cfg.Webhooks; w != nil {
+		b, err := os.ReadFile(w.SecretFile)
+		if err != nil {
+			return err
+		}
+		d.WebhookSecret = []byte(strings.TrimSpace(string(b)))
+		tlsCfg, err := transport.ClientTLS(w.CAFile, "", "")
+		if err != nil {
+			return fmt.Errorf("webhooks: %w", err)
+		}
+		timeout := w.Timeout
+		if timeout == 0 {
+			timeout = 10 * time.Second
+		}
+		d.WebhookHTTP = &http.Client{Timeout: timeout, Transport: &http.Transport{Proxy: nil, TLSClientConfig: tlsCfg},
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	}
+	store, err := postgres.Open(ctx, env("IDP_DATABASE_URL", ""))
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	metrics := observability.NewMetrics()
+	if ms := observability.ServeMetrics(env("IDP_METRICS_LISTEN", ""), metrics, log); ms != nil {
+		defer ms.Close()
+	}
+	a := &api.API{Store: store, Auth: verifier, Dispatcher: d, Log: log, Metrics: metrics, Version: version}
+	srv := &http.Server{Addr: env("IDP_WORKSPACE_LISTEN", "127.0.0.1:8560"), Handler: observability.HTTPMiddleware(tp, "idp-workspace/api", a.Handler()),
+		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 60 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second}
+	if cert := env("IDP_WORKSPACE_TLS_CERT_FILE", ""); cert != "" {
+		if srv.TLSConfig, err = transport.ServerTLS(cert, env("IDP_WORKSPACE_TLS_KEY_FILE", "")); err != nil {
+			return fmt.Errorf("TLS: %w", err)
+		}
+	}
+	errc := make(chan error, 1)
+	go func() {
+		if srv.TLSConfig != nil {
+			errc <- srv.ListenAndServeTLS("", "")
+		} else {
+			errc <- srv.ListenAndServe()
+		}
+	}()
+	log.Info("idp-workspace listening", "addr", srv.Addr, "devMode", dev, "tls", srv.TLSConfig != nil, "host", d.Host != nil, "eer", d.EER != nil, "webhooks", d.WebhookSecret != nil)
+	select {
+	case err := <-errc:
+		return err
+	case <-ctx.Done():
+	}
+	sctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	return srv.Shutdown(sctx)
+}
