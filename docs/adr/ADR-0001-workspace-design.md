@@ -122,3 +122,4 @@
 - 本仓库提供配套清单 `deploy/apps/eer-approvals.json`（两个动作都限 `approver` 角色、需确认，目标 `eer.decision`）。
 - 联机验证：EER 的 `TestLiveWorkspace` 对真实 Workspace 镜像推入两项、结束一项、再以新投影器从头重放，两项状态不变；Chromium 中 approver 成员看到 "Approval needed: execution:…" 与"Approve / Reject"按钮。
 - 未验证：从壳里点"Approve"到真实 EER（Temporal 中的 T2 执行）完成一次决定——需要 EER 的 OIDC 发行者与 Workspace 用户的主体映射。
+- 2026-11-04 补充：上面"未验证"的一条已由平台验收证明——idp-telos-go `deploy/compose/e2e.sh` 的 PATH B 中，bob 从收件箱批准一个真实的 T2 执行（Temporal 中的 idp-eer），Workspace 以令牌交换调用 EER，EER 记录 bob 的批准、完成执行并结束事项（idp-telos-go ADR-0001 §5）。
