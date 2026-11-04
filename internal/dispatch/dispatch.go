@@ -106,7 +106,7 @@ func failure(code string, status int, format string, a ...any) *Failure {
 func (d *Dispatcher) Dispatch(ctx context.Context, r Request) (json.RawMessage, *Failure) {
 	switch r.Action.Target.Kind {
 	case workspace.TargetHostRun:
-		return d.hostRun(ctx, r)
+		return d.startRun(ctx, r)
 	case workspace.TargetEERDecision:
 		return d.eerDecision(ctx, r)
 	case workspace.TargetWebhook:
@@ -122,10 +122,18 @@ func (d *Dispatcher) now() time.Time {
 	return time.Now()
 }
 
+// hostRun is what the workspace reads of idp-host's AgentRun (idp.telos.host; pinned in
+// tests/contracts/idp.telos.host and checked by TestHostContractPin).
+type hostRun struct {
+	RunID    string `json:"runId"`
+	ThreadID string `json:"threadId"`
+	Status   string `json:"status"`
+}
+
 // hostRun starts an AgentRun: the input becomes the user message, the work context's entities and
 // the action's identity go in as AG-UI context. The invocation id is the run id and the
 // idempotency key, so a retried invocation does not start a second run.
-func (d *Dispatcher) hostRun(ctx context.Context, r Request) (json.RawMessage, *Failure) {
+func (d *Dispatcher) startRun(ctx context.Context, r Request) (json.RawMessage, *Failure) {
 	if d.Host == nil {
 		return nil, failure("TARGET_UNAVAILABLE", 0, "no idp-host is configured")
 	}
@@ -155,11 +163,7 @@ func (d *Dispatcher) hostRun(ctx context.Context, r Request) (json.RawMessage, *
 		"messages": []map[string]any{{"id": "msg_" + runID, "role": "user", "content": message}},
 		"tools":    []any{}, "context": ctxEntries,
 	}
-	var out struct {
-		RunID    string `json:"runId"`
-		ThreadID string `json:"threadId"`
-		Status   string `json:"status"`
-	}
+	var out hostRun
 	status, f := d.call(ctx, d.Host, r.Principal, http.MethodPost, "/v1/agents/"+url.PathEscape(r.Action.Target.Agent)+"/runs", runID, body, &out)
 	if f != nil {
 		return nil, f
