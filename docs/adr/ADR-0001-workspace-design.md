@@ -115,3 +115,10 @@
 - 刷新令牌只在页面打开时续期；离开页面超过刷新令牌寿命就要重新登录。
 - 应用令牌签名密钥的轮换：JWKS 只发布当前一把钥匙，换钥匙会让未过期的旧令牌立即失效（最长 5 分钟）。
 - D17（EER 推入收件箱）在 idp-eer 中实现，见其 ADR。
+
+## 11. D17 实施结果（2026-11-04）
+
+- idp-eer ADR-038（PR #23）：`eer-projector` 跟随 Event Fabric 的 `execution.transitioned`：进入 T2 审批等待时以 `ws-producer` 身份放入 approval 事项（`externalRef = <execution_id>/approval`，动作为应用 `eer-approvals` 的 `approval.approve` / `approval.reject`），离开等待时按触发器结束（approved / rejected / expired，其余 withdrawn）。不改 EER 的工作流，不加 EER 表；启动时从头重放，依靠本服务的幂等（已结束的事项 409、不存在的事项结束 404）保证结果不变。
+- 本仓库提供配套清单 `deploy/apps/eer-approvals.json`（两个动作都限 `approver` 角色、需确认，目标 `eer.decision`）。
+- 联机验证：EER 的 `TestLiveWorkspace` 对真实 Workspace 镜像推入两项、结束一项、再以新投影器从头重放，两项状态不变；Chromium 中 approver 成员看到 "Approval needed: execution:…" 与"Approve / Reject"按钮。
+- 未验证：从壳里点"Approve"到真实 EER（Temporal 中的 T2 执行）完成一次决定——需要 EER 的 OIDC 发行者与 Workspace 用户的主体映射。

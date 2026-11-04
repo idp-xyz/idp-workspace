@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "idp.workspace.app/v1",
+  "name": "eer-approvals",
+  "version": "1.0.0",
+  "title": "EER 审批",
+  "description": "Decides the T2 approvals idp-eer puts into the inbox (idp-eer ADR-038). The decision goes to idp-eer POST /v1/executions/{id}/approval; EER records it and closes the item.",
+  "publisher": "IDP",
+  "capabilities": [],
+  "actions": [
+    {"name": "approval.approve", "title": "批准", "roles": ["approver"], "confirm": true,
+     "target": {"kind": "eer.decision", "decision": "approve"},
+     "input": {"type": "object", "properties": {"executionId": {"type": "string"}}, "additionalProperties": false}},
+    {"name": "approval.reject", "title": "拒绝", "roles": ["approver"], "confirm": true,
+     "target": {"kind": "eer.decision", "decision": "reject"},
+     "input": {"type": "object", "properties": {"executionId": {"type": "string"}}, "additionalProperties": false}}
+  ]
+}
