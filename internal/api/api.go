@@ -19,6 +19,7 @@ import (
 
 	"idp-workspace/adapters/identity"
 	"idp-workspace/adapters/store/postgres"
+	"idp-workspace/internal/apptoken"
 	"idp-workspace/internal/authorization"
 	"idp-workspace/internal/canonical"
 	"idp-workspace/internal/dispatch"
@@ -48,9 +49,13 @@ type API struct {
 	WebDir string
 	// DevMode tells the shell to offer development sign-in.
 	DevMode bool
-	Log     *slog.Logger
-	Metrics *observability.Metrics
-	Version string
+	// OIDC is the sign-in the shell performs (D14); nil = development tokens only.
+	OIDC *ShellOIDC
+	// AppTokens signs the tokens apps' backends receive (D15); nil = identity.token unavailable.
+	AppTokens *apptoken.Signer
+	Log       *slog.Logger
+	Metrics   *observability.Metrics
+	Version   string
 
 	invocations *observability.CounterVec
 }
@@ -574,8 +579,22 @@ func (a *API) Handler() http.Handler {
 		return 200, map[string]any{"items": out}, err
 	}, producer))
 	mux.HandleFunc("GET /shell-config.json", func(w http.ResponseWriter, _ *http.Request) {
-		transport.WriteJSON(w, 200, map[string]any{"devMode": a.DevMode, "version": a.Version})
+		cfg := map[string]any{"devMode": a.DevMode, "version": a.Version}
+		if a.OIDC != nil {
+			cfg["oidc"] = a.OIDC
+		}
+		transport.WriteJSON(w, 200, cfg)
 	})
+	mux.HandleFunc("GET /.well-known/jwks.json", func(w http.ResponseWriter, _ *http.Request) {
+		if a.AppTokens == nil {
+			http.NotFound(w, nil)
+			return
+		}
+		w.Header().Set("Content-Type", "application/jwk-set+json")
+		w.Header().Set("Cache-Control", "public, max-age=300")
+		_, _ = w.Write(a.AppTokens.JWKS())
+	})
+	mux.Handle("POST /v1/workspaces/{ws}/apps/{app}/token", a.role(a.appToken, member))
 	mux.HandleFunc("GET /", a.web)
 	return a.authenticate(mux)
 }

@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -15,8 +16,16 @@ import (
 
 // shellCSP keeps the shell to its own origin; app pages are framed only from https (or loopback in
 // development) and are further confined by the frame's sandbox and the bridge's origin check (D5, D9).
-const shellCSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; " +
-	"frame-src https: http://localhost:* http://127.0.0.1:*; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'"
+func (a *API) shellCSP() string {
+	connect := "'self'"
+	if a.OIDC != nil { // D14: the browser reads the discovery document and calls the token endpoint
+		if u, err := url.Parse(a.OIDC.Issuer); err == nil && u.Host != "" {
+			connect += " " + u.Scheme + "://" + u.Host
+		}
+	}
+	return "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src " + connect + "; " +
+		"frame-src https: http://localhost:* http://127.0.0.1:*; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'"
+}
 
 // web serves the built shell (D9): files under WebDir, index.html for every other path (client-side
 // routes). API paths never reach here.
@@ -37,7 +46,7 @@ func (a *API) web(w http.ResponseWriter, r *http.Request) {
 		h.Set("Cache-Control", "public, max-age=31536000, immutable") // content-hashed by the build
 	} else {
 		h.Set("Cache-Control", "no-cache")
-		h.Set("Content-Security-Policy", shellCSP)
+		h.Set("Content-Security-Policy", a.shellCSP())
 		h.Set("X-Frame-Options", "DENY")
 	}
 	http.ServeFile(w, r, file)

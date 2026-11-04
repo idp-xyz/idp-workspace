@@ -35,6 +35,7 @@ type Downstream struct {
 	HTTP     *http.Client
 	Auth     string
 	Token    func() (string, error) // static mode
+	Exchange *Exchanger             // exchange mode
 	Timeout  time.Duration
 }
 
@@ -43,6 +44,11 @@ func (d *Downstream) Bearer(p authorization.Principal) (string, error) { return 
 
 func (d *Downstream) bearer(p authorization.Principal) (string, error) {
 	switch d.Auth {
+	case AuthExchange:
+		if d.Exchange == nil {
+			return "", errors.New("no token exchange configured")
+		}
+		return d.Exchange.Exchange(context.Background(), p.Token)
 	case AuthStatic:
 		if d.Token == nil {
 			return "", errors.New("no service token configured")

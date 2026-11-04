@@ -4,7 +4,7 @@
 
 export const PROTOCOL = 'idp.bridge/v1';
 
-export type Capability = 'context.read' | 'context.write' | 'actions.invoke' | 'inbox.read' | 'ui.notify';
+export type Capability = 'context.read' | 'context.write' | 'actions.invoke' | 'inbox.read' | 'ui.notify' | 'identity.token';
 
 /** Requests an app may send, and the capability each needs (null = none). */
 export const METHODS: Readonly<Record<string, Capability | null>> = Object.freeze({
@@ -14,6 +14,7 @@ export const METHODS: Readonly<Record<string, Capability | null>> = Object.freez
   'actions.invoke': 'actions.invoke',
   'inbox.list': 'inbox.read',
   'ui.notify': 'ui.notify',
+  'identity.token': 'identity.token', // 1.1.0: a short-lived token for the app's own backend
 });
 
 /** Events the shell sends, and the capability an app needs to receive each (null = none). */

@@ -53,6 +53,8 @@ export function shellHandlers(api: Api, ws: Workspace, app: InstalledApp, ui: Sh
     },
     listInbox: (p) => api.inbox(ws.name, typeof p.kind === 'string' ? { kind: p.kind } : {}).then((items) =>
       items.map((i) => ({ itemId: i.itemId, kind: i.kind, title: i.title, priority: i.priority, status: i.status, entities: i.entities }))).catch(asBridgeError),
+    // D15: a token for the app's own backend, issued by the workspace - never the member's token
+    identityToken: () => api.appToken(ws.name, app.manifest.name).then((t) => ({ token: t.token, expiresAt: t.expiresAt })).catch(asBridgeError),
     notify: (p) => {
       const message = String(p.message ?? '').slice(0, 300);
       if (!message) throw new BridgeError('INVALID_INPUT', 'message is required');

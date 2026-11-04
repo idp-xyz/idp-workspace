@@ -7,15 +7,24 @@
 #            deploy/build.sh idp-host:dev and deploy/fixtures/build-fakemodel.sh); the workspace calls
 #            it with a static HOST token, and the test proves ADR-0001 D4 / D11 / D12 between real
 #            processes: a member's host.run action starts a run whose result comes back into the inbox.
+#   OIDC=1   (implies HOST=1) Keycloak instead of development tokens (deploy/keycloak/realm.py): the
+#            workspace and the HOST verify Keycloak's tokens, the workspace exchanges a member's token
+#            for the HOST's audience (ADR-0001 D14, D16), and with BROWSER=1 the shell signs in through
+#            Keycloak's login page (tests/browser/oidc.smoke.mjs).
 #   BROWSER=1  also drive the web shell in a real Chromium (tests/browser/shell.smoke.mjs) with the
 #            repository's playwright-core and its Chromium (npx playwright-core install chromium), or
 #            PLAYWRIGHT_CORE / CHROMIUM when given.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ENVF=.local/compose.env
+OIDC="${OIDC:-0}"
 HOST="${HOST:-0}"
+[[ "$OIDC" == 1 ]] && HOST=1
 C=(docker compose -f deploy/compose.yaml --env-file "$ENVF" --profile tools --profile host-tools)
 [[ "$HOST" == 1 ]] && C+=(--profile host)
+[[ "$OIDC" == 1 ]] && C+=(--profile oidc)
+ISSUER=http://127.0.0.1:7080/realms/idp
+KC_TOKEN="$ISSUER/protocol/openid-connect/token"
 WS=http://127.0.0.1:8560
 HOSTURL=http://127.0.0.1:8450
 mkdir -p .local
@@ -26,8 +35,10 @@ if [[ ! -f "$ENVF" ]] || ! grep -q IDP_HOST_DEV_SECRET "$ENVF"; then
     echo "IDP_HOST_DB_PASSWORD=$(openssl rand -hex 16)"
     echo "IDP_DEV_SECRET=$(openssl rand -hex 32)"
     echo "IDP_HOST_DEV_SECRET=$(openssl rand -hex 32)"
-    echo "IDP_HOST_CREDENTIAL_KEY=$(openssl rand -hex 32)"; } > "$ENVF"
+    echo "IDP_HOST_CREDENTIAL_KEY=$(openssl rand -hex 32)"
+    echo "KC_BOOTSTRAP_ADMIN_PASSWORD=$(openssl rand -hex 16)"; } > "$ENVF"
 fi
+grep -q '^KC_BOOTSTRAP_ADMIN_PASSWORD=' "$ENVF" || echo "KC_BOOTSTRAP_ADMIN_PASSWORD=$(openssl rand -hex 16)" >> "$ENVF"
 set -a; source "$ENVF"; set +a
 if [[ "$HOST" == 1 ]]; then
   for img in "${IDP_HOST_IMAGE:-idp-host:dev}" "${IDP_FAKEMODEL_IMAGE:-idp-host-fakemodel:dev}"; do
@@ -41,18 +52,40 @@ trap cleanup EXIT
 
 # the workspace container mounts these; without HOST=1 the config is empty (no targets)
 umask 022
-: > .local/workspace.yaml; printf 'none\n' > .local/host.key; chmod 644 .local/workspace.yaml .local/host.key
+: > .local/workspace.yaml; printf 'none\n' > .local/host.key; printf 'none\n' > .local/exchange.secret; chmod 644 .local/workspace.yaml .local/host.key .local/exchange.secret
+mkdir -p .local/keycloak; chmod 755 .local/keycloak
+if [[ "$OIDC" == 1 ]]; then
+  TENANT_FIXED="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+  rm -rf .local/keycloak/*
+  python3 deploy/keycloak/realm.py .local/keycloak "$TENANT_FIXED" .local/keycloak-clients.json >/dev/null
+  python3 -c 'import json; print(json.load(open(".local/keycloak-clients.json"))["idp-workspace"])' > .local/exchange.secret
+  export IDP_WORKSPACE_JWKS_URL=http://keycloak:7080/realms/idp/protocol/openid-connect/certs IDP_WORKSPACE_ISSUER="$ISSUER" \
+    IDP_WORKSPACE_OIDC_CLIENT_ID=workspace-shell IDP_WORKSPACE_SUBJECT_CLAIM=preferred_username \
+    IDP_HOST_JWKS_URL=http://keycloak:7080/realms/idp/protocol/openid-connect/certs IDP_HOST_ISSUER="$ISSUER"
+fi
 printf 'providers:\n  - name: local\n    kind: openai\n    baseUrl: http://fakemodel:18080/v1\n    insecure: true\n' > .local/host.yaml; chmod 644 .local/host.yaml
 umask 077
 
 "${C[@]}" up -d --wait postgres
+if [[ "$OIDC" == 1 ]]; then
+  "${C[@]}" up -d keycloak
+  for _ in $(seq 1 120); do curl -sf --noproxy '*' -o /dev/null "$ISSUER/.well-known/openid-configuration" && break; sleep 1; done
+  curl -sf --noproxy '*' -o /dev/null "$ISSUER/.well-known/openid-configuration" || { "${C[@]}" logs --tail 30 keycloak; echo "BLOCKED: Keycloak did not come up" >&2; exit 2; }
+fi
+secret_of() { python3 -c "import json,sys; d=json.load(open('.local/keycloak-clients.json')); print(d['users'][sys.argv[1]] if sys.argv[1] in d['users'] else d[sys.argv[1]])" "$1"; }
+kc_user() { curl -sf --noproxy '*' "$KC_TOKEN" -d grant_type=password -d client_id=e2e-cli -d "client_secret=$(secret_of e2e-cli)" -d "username=$1" -d "password=$(secret_of "$1")" -d scope=openid | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])'; }
+kc_service() { curl -sf --noproxy '*' "$KC_TOKEN" -d grant_type=client_credentials -d "client_id=$1" -d "client_secret=$(secret_of "$1")" | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])'; }
 "${C[@]}" exec -T postgres psql -U postgres -q -c 'CREATE DATABASE idp_workspace' >/dev/null
 "${C[@]}" run --rm -T workspace-admin migrate
 "${C[@]}" run --rm -T workspace-admin ensure-login idp_ws_svc
-TENANT="$("${C[@]}" run --rm -T workspace-admin seed-tenant acme | sed -n 's/^TENANT_ID=//p')"
+TENANT="$("${C[@]}" run --rm -T workspace-admin seed-tenant acme ${TENANT_FIXED:-} | sed -n 's/^TENANT_ID=//p')"
 [[ -n "$TENANT" ]] || { echo "BLOCKED: no tenant" >&2; exit 2; }
 tok() { "${C[@]}" run --rm -T workspace-admin dev-token "$TENANT" "$@"; }
-ADMIN="$(tok alice ws-admin)"; MEMBER="$(tok bob ws-member)"; PRODUCER="$(tok svc-eer ws-producer)"
+if [[ "$OIDC" == 1 ]]; then
+  ADMIN="$(kc_user alice)"; MEMBER="$(kc_user bob)"; PRODUCER="$(kc_service svc-eer)"
+else
+  ADMIN="$(tok alice ws-admin)"; MEMBER="$(tok bob ws-member)"; PRODUCER="$(tok svc-eer ws-producer)"
+fi
 
 if [[ "$HOST" == 1 ]]; then
   "${C[@]}" exec -T postgres psql -U postgres -q -c 'CREATE DATABASE idp_host' >/dev/null
@@ -61,10 +94,16 @@ if [[ "$HOST" == 1 ]]; then
   HTENANT="$("${C[@]}" run --rm -T host-admin seed-tenant acme "$TENANT" | sed -n 's/^TENANT_ID=//p')"
   [[ "$HTENANT" == "$TENANT" ]] || { echo "BLOCKED: HOST tenant $HTENANT != workspace tenant $TENANT" >&2; exit 2; }
   htok() { "${C[@]}" run --rm -T host-admin dev-token "$TENANT" "$@"; }
-  H_ADMIN="$(htok alice host-admin)"; H_APPROVER="$(htok carol host-approver)"
   umask 022
-  htok idp-workspace host-user > .local/host.key; chmod 644 .local/host.key
-  printf 'targets:\n  host: {endpoint: "http://host:8450", auth: static, tokenFile: /etc/idp/host.key}\n' > .local/workspace.yaml
+  if [[ "$OIDC" == 1 ]]; then
+    H_ADMIN="$(kc_user hostadmin)"; H_APPROVER="$(kc_user hostapprover)"
+    # D16: the member's own token, exchanged at Keycloak for the HOST's audience
+    printf 'targets:\n  host:\n    endpoint: "http://host:8450"\n    auth: exchange\n    exchange: {tokenUrl: "http://keycloak:7080/realms/idp/protocol/openid-connect/token", clientId: idp-workspace, clientSecretFile: /etc/idp/exchange.secret, audience: idp-host}\n' > .local/workspace.yaml
+  else
+    H_ADMIN="$(htok alice host-admin)"; H_APPROVER="$(htok carol host-approver)"
+    htok idp-workspace host-user > .local/host.key; chmod 644 .local/host.key
+    printf 'targets:\n  host: {endpoint: "http://host:8450", auth: static, tokenFile: /etc/idp/host.key}\n' > .local/workspace.yaml
+  fi
   umask 077
   "${C[@]}" up -d fakemodel host host-worker
   for _ in $(seq 1 60); do curl -sf --noproxy '*' -o /dev/null "$HOSTURL/healthz" && break; sleep 0.5; done
@@ -116,7 +155,8 @@ for it in json.load(sys.stdin)['items']:
     [[ -n "$RESULT" ]] && break; sleep 0.5
   done
   [[ "$RESULT" == *"— finished |"* ]] || { "${C[@]}" logs --tail 30 workspace host host-worker; echo "FAIL: run result not in the inbox: '$RESULT'" >&2; exit 1; }
-  STATUS="$(call 200 GET "$HOSTURL/v1/runs/$RUN" "$(cat .local/host.key)" | field "['status']")"
+  STATUS_TOKEN="$(cat .local/host.key)"; [[ "$OIDC" == 1 ]] && STATUS_TOKEN="$H_ADMIN"
+  STATUS="$(call 200 GET "$HOSTURL/v1/runs/$RUN" "$STATUS_TOKEN" | field "['status']")"
   [[ "$STATUS" == COMPLETED ]] || { echo "FAIL: HOST run $RUN is $STATUS" >&2; exit 1; }
   echo "PASS: host.run through the workspace: run $RUN COMPLETED on idp-host; inbox: $RESULT"
 fi
@@ -127,6 +167,12 @@ if [[ "${BROWSER:-0}" == 1 ]]; then
   call 201 POST "$WS/api/v1/apps" "$ADMIN" '{"schemaVersion":"idp.workspace.app/v1","name":"demo","version":"1.0.0","title":"Demo","publisher":"IDP","entry":{"url":"http://127.0.0.1:9700/demo-app.html"},"capabilities":["context.read","actions.invoke","ui.notify"],"actions":[{"name":"demo.ping","title":"Ping","target":{"kind":"webhook","url":"http://127.0.0.1:9701/hook"},"input":{"type":"object"}}]}' >/dev/null
   call 201 PUT "$WS/api/v1/workspaces/us-ops/installations/demo" "$ADMIN" '{"version":"1.0.0"}' >/dev/null
   call 200 PUT "$WS/v1/workspaces/us-ops/context" "$MEMBER" '{"entities":[{"type":"order","id":"1001"}]}' >/dev/null
-  WS_URL="$WS" MEMBER_TOKEN="$MEMBER" PRODUCER_TOKEN="$PRODUCER" ADMIN_TOKEN="$ADMIN" node tests/browser/shell.smoke.mjs
+  if [[ "$OIDC" == 1 ]]; then
+    call 201 POST "$WS/api/v1/apps" "$ADMIN" '{"schemaVersion":"idp.workspace.app/v1","name":"desk","version":"1.0.0","title":"Desk","publisher":"IDP","entry":{"url":"http://127.0.0.1:9700/token-app.html"},"capabilities":["identity.token"],"actions":[]}' >/dev/null
+    call 201 PUT "$WS/api/v1/workspaces/us-ops/installations/desk" "$ADMIN" '{"version":"1.0.0"}' >/dev/null
+    WS_URL="$WS" PRODUCER_TOKEN="$PRODUCER" KC_USER=bob KC_PASSWORD="$(secret_of bob)" node tests/browser/oidc.smoke.mjs
+  else
+    WS_URL="$WS" MEMBER_TOKEN="$MEMBER" PRODUCER_TOKEN="$PRODUCER" ADMIN_TOKEN="$ADMIN" node tests/browser/shell.smoke.mjs
+  fi
 fi
 echo "PASS: workspace image e2e (tenant $TENANT$([[ "$HOST" == 1 ]] && echo ', with idp-host'))"

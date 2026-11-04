@@ -56,6 +56,9 @@ type Profile struct {
 	JWKSURL     string
 	TenantClaim string
 	RolesClaim  string
+	// SubjectClaim names the member (default "sub"); an identity provider whose sub is an opaque id
+	// can name members by e.g. preferred_username, which is what administrators type (ADR-0001 D14).
+	SubjectClaim string
 }
 
 // JWKS fetches and caches the signing keys of an issuer.
@@ -221,7 +224,11 @@ func (v *Verifier) Verify(ctx context.Context, token string) (authorization.Prin
 		jwt.WithAudience(v.profile.Audience), jwt.WithExpirationRequired(), jwt.WithLeeway(v.leeway)); err != nil {
 		return authorization.Principal{}, ErrInvalid
 	}
-	sub, _ := claims["sub"].(string)
+	subjectClaim := v.profile.SubjectClaim
+	if subjectClaim == "" {
+		subjectClaim = "sub"
+	}
+	sub, _ := claims[subjectClaim].(string)
 	tenant, _ := claims[v.profile.TenantClaim].(string)
 	rawRoles, ok := claims[v.profile.RolesClaim].([]any)
 	if sub == "" || tenant == "" || !ok {

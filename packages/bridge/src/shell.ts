@@ -19,6 +19,7 @@ export interface ShellHandlers {
   invokeAction?(params: Record<string, unknown>): unknown | Promise<unknown>;
   listInbox?(params: Record<string, unknown>): unknown | Promise<unknown>;
   notify?(params: Record<string, unknown>): unknown | Promise<unknown>;
+  identityToken?(params: Record<string, unknown>): unknown | Promise<unknown>;
 }
 
 export interface ShellOptions {
@@ -47,6 +48,7 @@ const dispatch: Record<string, keyof ShellHandlers> = {
   'actions.invoke': 'invokeAction',
   'inbox.list': 'listInbox',
   'ui.notify': 'notify',
+  'identity.token': 'identityToken',
 };
 
 export function createShellHost(opts: ShellOptions): ShellHost {

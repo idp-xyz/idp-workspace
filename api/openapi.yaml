@@ -118,6 +118,16 @@ paths:
     parameters: [{$ref: '#/components/parameters/ws'}]
     get: {summary: 'The caller''s invocations. ws-member', responses: {'200': {description: '{invocations}'}}}
 
+  /v1/workspaces/{ws}/apps/{app}/token:
+    parameters: [{$ref: '#/components/parameters/ws'}, {name: app, in: path, required: true, schema: {type: string}}]
+    post: {summary: 'A short-lived ES256 token for the app''s own backend (D15): aud idp-workspace-app:{app}, sub, tenant_id, workspace, app, appVersion, roles; only for an installed, published app whose manifest requests identity.token (403 CAPABILITY_DENIED). ws-member', responses: {'201': {description: '{token, expiresAt, audience}'}, '403': {$ref: '#/components/responses/Error'}, '404': {$ref: '#/components/responses/Error'}}}
+  /.well-known/jwks.json:
+    get: {security: [], summary: 'The public keys of app tokens (D15)', responses: {'200': {description: JWKS}}}
+  /shell-config.json:
+    get: {security: [], summary: 'What the shell needs before sign-in: {devMode, version, oidc?: {issuer, clientId, scope}} (D14)', responses: {'200': {description: ok}}}
+  /v1/workspaces/{ws}/inbox/stream:
+    parameters: [{$ref: '#/components/parameters/ws'}]
+    get: {summary: 'Server-sent events "item" for every change of an item the caller sees (D10); resume with Last-Event-ID or ?after=, ?replay=open for everything open first. ws-member', responses: {'200': {description: text/event-stream}}}
   /v1/workspaces/{ws}/inbox/items:
     parameters: [{$ref: '#/components/parameters/ws'}]
     post:

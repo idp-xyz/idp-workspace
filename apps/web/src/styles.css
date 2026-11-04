@@ -36,6 +36,8 @@ th, td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; ver
 .mono { font-family: ui-monospace, monospace; font-size: 12px; }
 .row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
 .tabs { display: flex; gap: 6px; }
+.who { opacity: .8; font-size: 13px; }
+.primary-wide { width: 100%; padding: 8px; margin: 8px 0 16px; }
 .signin { max-width: 520px; margin: 12vh auto; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 24px; }
 .signin form { display: grid; gap: 10px; }
 .signin textarea { font: 12px ui-monospace, monospace; }

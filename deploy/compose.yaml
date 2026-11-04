@@ -4,7 +4,11 @@
 # Driven by deploy/e2e.sh, which generates the secrets in .local/compose.env, the workspace config in
 # .local/workspace.yaml and the HOST config in .local/host.yaml. The host sees 127.0.0.1:8560 (API),
 # 9566 (metrics) and, with the host profile, 8450 (HOST).
-# DEV ONLY: HS256 development tokens, plaintext http on the private networks.
+# With --profile oidc also Keycloak (the realm comes from deploy/keycloak/realm.py): the shell signs
+# in there, the workspace and the HOST verify its tokens, and the workspace exchanges a member's token
+# for the HOST's audience (ADR-0001 D14, D16). The issuer is the URL the browser uses
+# (http://127.0.0.1:7080/realms/idp); containers reach it as keycloak:7080.
+# DEV ONLY: development tokens or a test realm, plaintext http on the private networks.
 name: idp-workspace-go
 
 x-hardened: &hardened
@@ -58,8 +62,33 @@ services:
       IDP_DEV_MODE: 'true'
       IDP_DEV_SECRET: ${IDP_DEV_SECRET:?run deploy/e2e.sh}
       IDP_METRICS_LISTEN: 0.0.0.0:9566
-    volumes: ['../.local/workspace.yaml:/etc/idp/workspace.yaml:ro', '../.local/host.key:/etc/idp/host.key:ro']
+      IDP_WORKSPACE_PUBLIC_URL: http://127.0.0.1:8560
+      # OIDC=1 sets these (Keycloak); empty = development tokens
+      IDP_WORKSPACE_JWKS_URL: ${IDP_WORKSPACE_JWKS_URL:-}
+      IDP_WORKSPACE_ISSUER: ${IDP_WORKSPACE_ISSUER:-idp-workspace-dev}
+      IDP_WORKSPACE_OIDC_CLIENT_ID: ${IDP_WORKSPACE_OIDC_CLIENT_ID:-}
+      IDP_WORKSPACE_SUBJECT_CLAIM: ${IDP_WORKSPACE_SUBJECT_CLAIM:-sub}
+    volumes: ['../.local/workspace.yaml:/etc/idp/workspace.yaml:ro', '../.local/host.key:/etc/idp/host.key:ro', '../.local/exchange.secret:/etc/idp/exchange.secret:ro']
     depends_on: {postgres: {condition: service_healthy}}
+
+  keycloak:
+    image: ${IDP_KEYCLOAK_IMAGE:-quay.io/keycloak/keycloak:26.8.1}
+    profiles: [oidc]
+    command: [start-dev, --import-realm, --features, 'token-exchange-standard']
+    networks: [edge, upstream]
+    ports: ['127.0.0.1:7080:7080']
+    environment:
+      KC_HTTP_PORT: '7080'
+      KC_HOSTNAME: http://127.0.0.1:7080
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: 'true'
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:?run deploy/e2e.sh}
+    volumes: ['../.local/keycloak:/opt/keycloak/data/import:ro']
+    healthcheck:
+      test: ['CMD', 'bash', '-c', 'exec 3<>/dev/tcp/127.0.0.1/7080']
+      interval: 3s
+      timeout: 3s
+      retries: 80
 
   # ---- the HOST (profile host): images built in the idp-host repository ----
   fakemodel:
@@ -94,6 +123,8 @@ services:
       IDP_HOST_LISTEN: 0.0.0.0:8450
       IDP_DEV_MODE: 'true'
       IDP_DEV_SECRET: ${IDP_HOST_DEV_SECRET:?run deploy/e2e.sh}
+      IDP_HOST_JWKS_URL: ${IDP_HOST_JWKS_URL:-}
+      IDP_HOST_ISSUER: ${IDP_HOST_ISSUER:-idp-host-dev}
       IDP_HOST_CREDENTIAL_KEY: ${IDP_HOST_CREDENTIAL_KEY:?run deploy/e2e.sh}
       IDP_HOST_CONFIG: /etc/idp/host.yaml
       IDP_HOST_WORKERS: '0'

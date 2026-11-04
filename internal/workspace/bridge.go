@@ -20,6 +20,7 @@ var BridgeMethods = map[string]string{
 	"actions.invoke": CapActionsInvoke,
 	"inbox.list":     CapInboxRead,
 	"ui.notify":      CapNotify,
+	"identity.token": CapIdentityToken,
 }
 
 // Bridge events (the shell sends) and the capability an app needs to receive each.

@@ -6,12 +6,16 @@ package integration
 import (
 	"bufio"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -22,11 +26,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
 
 	"idp-workspace/adapters/identity"
 	"idp-workspace/adapters/store/postgres"
 	"idp-workspace/internal/api"
+	"idp-workspace/internal/apptoken"
 	"idp-workspace/internal/authorization"
 	"idp-workspace/internal/dispatch"
 	"idp-workspace/internal/observability"
@@ -213,7 +219,12 @@ func newEnv(t *testing.T) *env {
 	_ = os.MkdirAll(filepath.Join(web, "assets"), 0o755)
 	_ = os.WriteFile(filepath.Join(web, "index.html"), []byte("<!doctype html><title>IDP Workspace</title>"), 0o644)
 	_ = os.WriteFile(filepath.Join(web, "assets", "app-1234.js"), []byte("console.log(1)"), 0o644)
+	signer, err := apptoken.Generate("https://workspace.it.example")
+	if err != nil {
+		t.Fatal(err)
+	}
 	a := &api.API{Store: store, Auth: verifier, Dispatcher: d, Log: log, Metrics: observability.NewMetrics(), Version: "it", WebDir: web, DevMode: true,
+		AppTokens: signer, OIDC: &api.ShellOIDC{Issuer: "http://127.0.0.1:7080/realms/idp", ClientID: "workspace-shell", Scope: "openid"},
 		Runs: &runs.Follower{Store: store, Endpoint: e.host.srv.URL, Log: log}}
 	tp, _, err := observability.Setup("idp-workspace-it", "it", log)
 	if err != nil {
@@ -672,6 +683,62 @@ func TestWorkspaceEndToEnd(t *testing.T) {
 		if resp, _ := get("/api/v1/unknown"); resp.StatusCode != 401 {
 			t.Fatalf("%d", resp.StatusCode)
 		}
+	})
+
+	t.Run("app-tokens", func(t *testing.T) {
+		// D15: an app that requested identity.token gets a short-lived token for its own backend
+		desk := `{"schemaVersion":"idp.workspace.app/v1","name":"desk","version":"1.0.0","title":"Desk","publisher":"IDP","entry":{"url":"https://desk.apps.example/"},"capabilities":["identity.token"],"actions":[]}`
+		e.must(201, "POST", "/api/v1/apps", "alice", desk)
+		e.must(201, "PUT", "/api/v1/workspaces/us-ops/installations/desk", "alice", map[string]any{"version": "1.0.0"})
+		out := e.must(201, "POST", "/v1/workspaces/us-ops/apps/desk/token", "bob", nil)
+		if out["audience"] != "idp-workspace-app:desk" || out["token"] == nil {
+			t.Fatalf("%v", out)
+		}
+		// verified with nothing but the published JWKS
+		resp, err := http.Get(e.api.URL + "/.well-known/jwks.json")
+		if err != nil || resp.StatusCode != 200 {
+			t.Fatalf("%v %v", resp, err)
+		}
+		var set struct {
+			Keys []struct{ Kid, X, Y string }
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&set)
+		resp.Body.Close()
+		x, _ := base64.RawURLEncoding.DecodeString(set.Keys[0].X)
+		y, _ := base64.RawURLEncoding.DecodeString(set.Keys[0].Y)
+		pub := &ecdsa.PublicKey{Curve: elliptic.P256(), X: new(big.Int).SetBytes(x), Y: new(big.Int).SetBytes(y)}
+		claims := jwt.MapClaims{}
+		if _, err := jwt.ParseWithClaims(out["token"].(string), claims, func(*jwt.Token) (any, error) { return pub, nil },
+			jwt.WithValidMethods([]string{"ES256"}), jwt.WithIssuer("https://workspace.it.example"), jwt.WithAudience("idp-workspace-app:desk")); err != nil {
+			t.Fatal(err)
+		}
+		if claims["sub"] != "bob" || claims["tenant_id"] != e.tenantA || fmt.Sprint(claims["roles"]) != "[approver]" || claims["workspace"].(map[string]any)["name"] != "us-ops" {
+			t.Fatalf("%v", claims)
+		}
+		if strings.Contains(out["token"].(string), e.tokens["bob"]) {
+			t.Fatal("the user's token leaked into the app token")
+		}
+		// an app that did not ask, an app not installed, a non-member
+		if st, out := e.call("POST", "/v1/workspaces/us-ops/apps/orders/token", "bob", nil); st != 403 || code(out) != "CAPABILITY_DENIED" {
+			t.Fatalf("%d %v", st, out)
+		}
+		e.must(404, "POST", "/v1/workspaces/us-ops/apps/billing/token", "bob", nil)
+		e.must(404, "POST", "/v1/workspaces/us-ops/apps/desk/token", "dan", nil)
+		e.must(403, "POST", "/v1/workspaces/us-ops/apps/desk/token", "svc-eer", nil)
+		// the shell is told where to sign in, and its CSP lets it reach the issuer
+		resp, _ = http.Get(e.api.URL + "/shell-config.json")
+		var cfg map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&cfg)
+		resp.Body.Close()
+		if cfg["oidc"].(map[string]any)["clientId"] != "workspace-shell" {
+			t.Fatalf("%v", cfg)
+		}
+		resp, _ = http.Get(e.api.URL + "/")
+		resp.Body.Close()
+		if !strings.Contains(resp.Header.Get("Content-Security-Policy"), "connect-src 'self' http://127.0.0.1:7080;") {
+			t.Fatalf("%s", resp.Header.Get("Content-Security-Policy"))
+		}
+		e.must(204, "DELETE", "/api/v1/workspaces/us-ops/installations/desk", "alice", nil)
 	})
 
 	t.Run("revoked-and-uninstalled", func(t *testing.T) {

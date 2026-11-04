@@ -1,8 +1,8 @@
 {
  "$schema": "https://json-schema.org/draft/2020-12/schema",
- "$id": "urn:idp:telos:workspace:1.0.0",
- "title": "idp.telos.workspace 1.0.0",
- "description": "idp-workspace（企业工作入口）对外发布的契约（ADR-0001 D8）：Workspace、AppManifest（含 ActionContract、Target）、AppRelease、Installation、InboxItem、WorkContext、Invocation、BridgeMessage（应用桥 idp.bridge/v1）与 Problem。生产者是 idp-workspace，权威副本在 idp-workspace/api/contracts/，由 go test ./internal/workspace -run TestContract 保证与实现一致；idp-contracts 中的副本只能与之逐字节相同。JSON Schema 只描述形状与可本地判定的规则；成员资格、能力授予、动作角色与事项可见性由服务判定。",
+ "$id": "urn:idp:telos:workspace:1.1.0",
+ "title": "idp.telos.workspace 1.1.0",
+ "description": "idp-workspace（企业工作入口）对外发布的契约（ADR-0001 D8）：Workspace、AppManifest（含 ActionContract、Target）、AppRelease、Installation、InboxItem、WorkContext、Invocation、BridgeMessage（应用桥 idp.bridge/v1）与 Problem。生产者是 idp-workspace，权威副本在 idp-workspace/api/contracts/，由 go test ./internal/workspace -run TestContract 保证与实现一致；idp-contracts 中的副本只能与之逐字节相同。JSON Schema 只描述形状与可本地判定的规则；成员资格、能力授予、动作角色与事项可见性由服务判定。 1.1.0 相对 1.0.0 只做新增（M3，D15）：清单能力与桥方法各增 identity.token（应用向壳申请发给其后端的短期应用令牌）。",
  "oneOf": [
   {
    "$ref": "#/$defs/Workspace"
@@ -128,7 +128,8 @@
        "context.write",
        "actions.invoke",
        "inbox.read",
-       "ui.notify"
+       "ui.notify",
+       "identity.token"
       ]
      },
      "uniqueItems": true
@@ -942,7 +943,7 @@
   },
   "BridgeMessage": {
    "title": "BridgeMessage",
-   "description": "应用桥 idp.bridge/v1 的一条 postMessage 消息（D5）：request（应用 → 壳，带 id、method、params）、response（壳 → 应用，回带 id 与 result 或 error）、event（壳 → 应用，带 event 与 data）。壳只接受来自安装入口源的消息，只执行清单申请过的能力，从不把用户令牌交给应用。",
+   "description": "应用桥 idp.bridge/v1 的一条 postMessage 消息（D5）：request（应用 → 壳，带 id、method、params）、response（壳 → 应用，回带 id 与 result 或 error）、event（壳 → 应用，带 event 与 data）。壳只接受来自安装入口源的消息，只执行清单申请过的能力，从不把用户令牌交给应用。 identity.token（1.1.0）返回 {token, expiresAt}：Workspace 签发、受众为 idp-workspace-app:<app> 的令牌，应用后端以 Workspace 的 JWKS 校验；它不是用户令牌。",
    "x-idp-telos-owner": "idp.telos.workspace",
    "type": "object",
    "additionalProperties": false,
@@ -972,7 +973,8 @@
       "context.set",
       "actions.invoke",
       "inbox.list",
-      "ui.notify"
+      "ui.notify",
+      "identity.token"
      ]
     },
     "params": {

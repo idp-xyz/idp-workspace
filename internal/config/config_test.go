@@ -39,6 +39,8 @@ webhooks: {secretFile: "`+secret+`"}
 		`targets: {host: {endpoint: "https://x", auth: magic}}`,
 		`targets: {host: {endpoint: "https://x", auth: static}}`,
 		`targets: {eer: {endpoint: "https://x"}}`,
+		`targets: {host: {endpoint: "https://x", auth: exchange}}`,
+		`targets: {host: {endpoint: "https://x", auth: exchange, exchange: {tokenUrl: "https://idp/token", clientId: "c"}}}`,
 		`webhooks: {secretFile: "` + write(t, "short", "abc") + `"}`,
 		`unknown: 1`,
 	} {

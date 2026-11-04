@@ -64,7 +64,8 @@ export class Api {
   uninstall(ws: string, app: string) { return this.request<null>('DELETE', `/api/v1/workspaces/${encodeURIComponent(ws)}/installations/${encodeURIComponent(app)}`); }
   audit(limit = 50) { return this.request<{ events: AuditEvent[] }>('GET', `/api/v1/audit?limit=${limit}`).then((r) => r.events); }
 
-  shellConfig() { return this.request<{ devMode: boolean; version: string }>('GET', '/shell-config.json'); }
+  shellConfig() { return this.request<{ devMode: boolean; version: string; oidc?: { issuer: string; clientId: string; scope: string } }>('GET', '/shell-config.json'); }
+  appToken(ws: string, app: string) { return this.request<{ token: string; expiresAt: string }>('POST', `/v1/workspaces/${encodeURIComponent(ws)}/apps/${encodeURIComponent(app)}/token`); }
   workspaces() { return this.request<{ workspaces: Workspace[] }>('GET', '/v1/workspaces').then((r) => r.workspaces); }
   workspace(ws: string) { return this.request<{ workspace: Workspace; roles: string[]; member: boolean }>('GET', `/v1/workspaces/${encodeURIComponent(ws)}`); }
   apps(ws: string) { return this.request<{ apps: InstalledApp[] }>('GET', `/v1/workspaces/${encodeURIComponent(ws)}/apps`).then((r) => r.apps); }

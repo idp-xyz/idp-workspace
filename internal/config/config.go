@@ -29,9 +29,28 @@ type Targets struct {
 type Downstream struct {
 	Endpoint  string        `yaml:"endpoint"`
 	CAFile    string        `yaml:"caFile"`
-	Auth      string        `yaml:"auth"`      // forward (default) | static
+	Auth      string        `yaml:"auth"`      // forward (default) | static | exchange
 	TokenFile string        `yaml:"tokenFile"` // static: the service token, re-read on every call (rotation)
+	Exchange  *Exchange     `yaml:"exchange"`  // exchange: RFC 8693 at the identity provider (ADR-0001 D16)
 	Timeout   time.Duration `yaml:"timeout"`
+}
+
+// Exchange is the identity provider's token endpoint and the workspace's client there.
+type Exchange struct {
+	TokenURL         string `yaml:"tokenUrl"`
+	ClientID         string `yaml:"clientId"`
+	ClientSecretFile string `yaml:"clientSecretFile"`
+	Audience         string `yaml:"audience"`
+	CAFile           string `yaml:"caFile"`
+}
+
+// Secret reads the client secret file (re-read on every exchange: rotation).
+func (x *Exchange) Secret() (string, error) {
+	b, err := os.ReadFile(x.ClientSecretFile)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(b)), nil
 }
 
 // EER adds the tenant id idp-eer expects in its request bodies.
@@ -102,8 +121,13 @@ func (d *Downstream) check(name string) error {
 		if d.TokenFile == "" {
 			return fmt.Errorf("%s: static auth needs tokenFile", name)
 		}
+	case "exchange":
+		x := d.Exchange
+		if x == nil || (!strings.HasPrefix(x.TokenURL, "http://") && !strings.HasPrefix(x.TokenURL, "https://")) || x.ClientID == "" || x.ClientSecretFile == "" || x.Audience == "" {
+			return fmt.Errorf("%s: exchange auth needs exchange.tokenUrl, clientId, clientSecretFile and audience", name)
+		}
 	default:
-		return fmt.Errorf("%s: auth must be forward or static", name)
+		return fmt.Errorf("%s: auth must be forward, static or exchange", name)
 	}
 	return nil
 }

@@ -13,11 +13,14 @@
 //	IDP_MIGRATION_DATABASE_URL   schema owner connection (migrate, ensure-login, seed-tenant)
 //	IDP_WORKSPACE_LISTEN         default 127.0.0.1:8560
 //	IDP_WORKSPACE_WEB_DIR        the built web shell (apps/web/dist) served at / (ADR-0001 D9); unset = API only
+//	IDP_WORKSPACE_OIDC_CLIENT_ID the shell's public OIDC client (authorization code + PKCE at IDP_WORKSPACE_ISSUER, ADR-0001 D14); IDP_WORKSPACE_OIDC_SCOPE (default "openid")
+//	IDP_WORKSPACE_PUBLIC_URL     the workspace's own URL, issuer of app tokens (D15)
+//	IDP_WORKSPACE_SIGNING_KEY_FILE   P-256 PEM key signing app tokens; in dev mode an ephemeral key when unset
 //	IDP_WORKSPACE_CONFIG         optional YAML: action targets (idp-host, idp-eer) and the webhook secret (ADR-0001 D4)
 //	IDP_DEV_MODE                 "true": HS256 development tokens
 //	IDP_WORKSPACE_ISSUER / IDP_WORKSPACE_AUDIENCE   accepted tokens (default idp-workspace-dev / idp-workspace)
 //	IDP_WORKSPACE_JWKS_URL       production keys; IDP_DEV_SECRET[_FILE] (>= 32 bytes) in dev mode instead
-//	IDP_WORKSPACE_TENANT_CLAIM / IDP_WORKSPACE_ROLES_CLAIM   claims (default tenant_id / roles)
+//	IDP_WORKSPACE_TENANT_CLAIM / IDP_WORKSPACE_ROLES_CLAIM / IDP_WORKSPACE_SUBJECT_CLAIM   claims (default tenant_id / roles / sub)
 //	IDP_WORKSPACE_TLS_CERT_FILE / IDP_WORKSPACE_TLS_KEY_FILE   serve HTTPS
 //	IDP_IDENTITY_CA_FILE         extra trusted CAs for the JWKS endpoint
 //	IDP_METRICS_LISTEN           serve Prometheus metrics (/metrics) on this address; off when unset
@@ -40,6 +43,7 @@ import (
 	"idp-workspace/adapters/identity"
 	"idp-workspace/adapters/store/postgres"
 	"idp-workspace/internal/api"
+	"idp-workspace/internal/apptoken"
 	"idp-workspace/internal/config"
 	"idp-workspace/internal/dispatch"
 	"idp-workspace/internal/observability"
@@ -70,7 +74,7 @@ func secret(key string) string {
 
 func profile() identity.Profile {
 	return identity.Profile{Issuer: env("IDP_WORKSPACE_ISSUER", "idp-workspace-dev"), Audience: env("IDP_WORKSPACE_AUDIENCE", "idp-workspace"), JWKSURL: env("IDP_WORKSPACE_JWKS_URL", ""),
-		TenantClaim: env("IDP_WORKSPACE_TENANT_CLAIM", "tenant_id"), RolesClaim: env("IDP_WORKSPACE_ROLES_CLAIM", "roles")}
+		TenantClaim: env("IDP_WORKSPACE_TENANT_CLAIM", "tenant_id"), RolesClaim: env("IDP_WORKSPACE_ROLES_CLAIM", "roles"), SubjectClaim: env("IDP_WORKSPACE_SUBJECT_CLAIM", "sub")}
 }
 
 func main() {
@@ -131,8 +135,16 @@ func downstream(d *config.Downstream) (*dispatch.Downstream, error) {
 		return nil, err
 	}
 	out := &dispatch.Downstream{Endpoint: d.Endpoint, Auth: d.Auth, Timeout: d.Timeout, HTTP: &http.Client{Transport: &http.Transport{Proxy: nil, TLSClientConfig: tlsCfg}}}
-	if d.Auth == dispatch.AuthStatic {
+	switch d.Auth {
+	case dispatch.AuthStatic:
 		out.Token = d.Token
+	case dispatch.AuthExchange: // ADR-0001 D16
+		xTLS, err := transport.ClientTLS(d.Exchange.CAFile, "", "")
+		if err != nil {
+			return nil, err
+		}
+		out.Exchange = &dispatch.Exchanger{TokenURL: d.Exchange.TokenURL, ClientID: d.Exchange.ClientID, ClientSecret: d.Exchange.Secret, Audience: d.Exchange.Audience,
+			HTTP: &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{Proxy: nil, TLSClientConfig: xTLS}}}
 	}
 	return out, nil
 }
@@ -208,7 +220,25 @@ func serve(log *slog.Logger) error {
 	if ms := observability.ServeMetrics(env("IDP_METRICS_LISTEN", ""), metrics, log); ms != nil {
 		defer ms.Close()
 	}
-	a := &api.API{Store: store, Auth: verifier, Dispatcher: d, Log: log, Metrics: metrics, Version: version, DevMode: dev, WebDir: env("IDP_WORKSPACE_WEB_DIR", "")}
+	a := &api.API{Store: store, Auth: verifier, Dispatcher: d, Log: log, Metrics: metrics, Version: version, DevMode: verifier.Dev(), WebDir: env("IDP_WORKSPACE_WEB_DIR", "")}
+	if id := env("IDP_WORKSPACE_OIDC_CLIENT_ID", ""); id != "" { // ADR-0001 D14
+		a.OIDC = &api.ShellOIDC{Issuer: prof.Issuer, ClientID: id, Scope: env("IDP_WORKSPACE_OIDC_SCOPE", "openid")}
+	}
+	if pub := env("IDP_WORKSPACE_PUBLIC_URL", ""); pub != "" { // ADR-0001 D15
+		switch keyFile := env("IDP_WORKSPACE_SIGNING_KEY_FILE", ""); {
+		case keyFile != "":
+			if a.AppTokens, err = apptoken.Load(pub, keyFile); err != nil {
+				return fmt.Errorf("IDP_WORKSPACE_SIGNING_KEY_FILE: %w", err)
+			}
+		case dev:
+			if a.AppTokens, err = apptoken.Generate(pub); err != nil {
+				return err
+			}
+			log.Warn("app tokens are signed with an ephemeral key (dev mode); they stop verifying after a restart")
+		default:
+			return errors.New("IDP_WORKSPACE_PUBLIC_URL needs IDP_WORKSPACE_SIGNING_KEY_FILE")
+		}
+	}
 	if d.Host != nil { // ADR-0001 D11: results of host.run actions come back into the inbox
 		a.Runs = &runs.Follower{Store: store, Endpoint: d.Host.Endpoint, HTTP: d.Host.HTTP, Log: log}
 	}
@@ -227,7 +257,7 @@ func serve(log *slog.Logger) error {
 			errc <- srv.ListenAndServe()
 		}
 	}()
-	log.Info("idp-workspace listening", "addr", srv.Addr, "devMode", dev, "tls", srv.TLSConfig != nil, "host", d.Host != nil, "eer", d.EER != nil, "webhooks", d.WebhookSecret != nil, "web", a.WebDir != "")
+	log.Info("idp-workspace listening", "addr", srv.Addr, "devMode", dev, "tls", srv.TLSConfig != nil, "host", d.Host != nil, "eer", d.EER != nil, "webhooks", d.WebhookSecret != nil, "web", a.WebDir != "", "oidc", a.OIDC != nil, "appTokens", a.AppTokens != nil)
 	select {
 	case err := <-errc:
 		return err

@@ -88,3 +88,30 @@
 - D13 已实现：`apps/web/src/Admin.tsx`。服务端拒绝的原因（如 `CONFLICT`、`INVALID_MANIFEST`）原样显示给管理员；非法 JSON 在发出请求前就被拒绝。
 - 验证：组件测试 15 项（管理页：建空间、加成员、发布、安装、升级带 revision、服务端拒绝、审计；导航：只有管理员有"管理"）；集成测试覆盖 `/v1/me` 与已撤销版本仍可见于管理员列表；浏览器冒烟新增整条管理员流程——管理员只用界面建 `eu-ops`、把 bob 加为 approver、发布并安装 `eu-desk`、在审计里看到四类操作、提交非法清单被拒；随后 bob 登录，看到新工作空间和应用，且没有"管理"入口。
 - 局限：不能在界面里编辑清单（发布后不可变，改了要发新版本）；撤销理由用浏览器的 prompt 输入；没有用户目录，成员只能按令牌里的 sub 手填。
+
+## 9. M3 决策（2026-11-04）
+
+| # | 决策 | 理由 |
+|---|---|---|
+| D14 | **OIDC 登录**：壳以授权码 + PKCE（S256）作为公开客户端登录（`IDP_WORKSPACE_OIDC_CLIENT_ID`，发行者即 `IDP_WORKSPACE_ISSUER`），回调路径 `/callback`，校验 state；访问令牌存 sessionStorage，到期前用 refresh token 续期，失败则回到登录。`/shell-config.json` 告诉壳发行者与客户端；入口页 CSP 的 `connect-src` 加上发行者的源（发现文档与令牌端点由浏览器直接访问）。服务端照旧以 JWKS 验证令牌（`tenant_id`、`roles` 声明，受众 `idp-workspace`）；开发令牌只在开发模式可用 | 生产中用户由企业身份提供方登录；Workspace 不保存密码，也不代理登录 |
+| D15 | **应用令牌**：清单可申请新能力 `identity.token`；桥新增同名方法。壳调用 `POST /v1/workspaces/{ws}/apps/{app}/token`，Workspace 以自己的 ES256 密钥签发 5 分钟的令牌：`iss` = `IDP_WORKSPACE_PUBLIC_URL`，`aud` = `idp-workspace-app:<app>`，`sub`、`tenant_id`、`workspace`、`app`、`appVersion`、`roles`（工作空间角色）、`jti`。公钥在 `GET /.well-known/jwks.json`。密钥来自 `IDP_WORKSPACE_SIGNING_KEY_FILE`（PEM，P-256）；开发模式缺省时启动时生成。`packages/bridge` 提供后端校验函数。契约 `idp.telos.workspace` 1.1.0：能力与桥方法各加一个枚举值 | 应用后端需要知道"是哪位成员、在哪个工作空间"，又不能拿到用户令牌（D5）；受众按应用分开，一个应用的令牌不能用在另一个应用 |
+| D16 | **下游令牌交换**：目标凭据新增 `auth: exchange`（`exchange: {tokenUrl, clientId, clientSecretFile, audience}`）：以 RFC 8693 把调用者令牌换成受众为下游的令牌（Workspace 为请求方客户端），按（令牌摘要、受众）缓存到过期前 30 秒；运行跟随（D11）也用它。交换被拒时调用记录为 `TARGET_UNAVAILABLE` 并带身份提供方的错误码 | forward 要求一个令牌同时对多个受众有效，交换让每个下游只收到发给自己的令牌，且由身份提供方决定是否允许 |
+| D17 | **EER 推入收件箱**：在 idp-eer 中，执行进入 T2 审批等待时放入 approval 事项（`externalRef = <execution_id>/approval`，引用 eer / execution，动作为批准 / 拒绝），审批被决定或过期时以对应结果结束该事项；以 `ws-producer` 身份调用，失败不影响执行（只记录）。属 idp-eer 的变更，按其 ADR 流程 | EER 没有列表与事件接口（第 1 节），由拥有者推入是唯一不伪造权威的方式 |
+
+**验证要求**：真实 Keycloak（`OIDC=1 bash deploy/e2e.sh`）——浏览器经 Keycloak 登录页登录壳；以交换得到的令牌调用真实 idp-host（HOST 以 JWKS 验证）；应用后端以 JWKS 校验应用令牌。
+
+## 10. M3 实施结果（2026-11-04，WSL 实测）
+
+- D14：`apps/web/src/oidc.ts`：发现文档、PKCE（S256，32 字节随机 verifier）、state 校验（一次性，伪造或重放都拒绝）、授权码换令牌、refresh 续期、带 `id_token_hint` 的退出。服务端：`/shell-config.json` 给出发行者与客户端；入口页 CSP 的 `connect-src` 加入发行者的源；只有使用开发验证器时壳才显示开发令牌表单。新增 `IDP_WORKSPACE_SUBJECT_CLAIM`：Keycloak 的 `sub` 是不透明 id，以 `preferred_username` 作成员名，管理员才能按用户名添加成员。
+- D15：`internal/apptoken`（ES256，kid 为公钥摘要，5 分钟，受众 `idp-workspace-app:<app>`）；`POST /v1/workspaces/{ws}/apps/{app}/token` 只对成员、已安装且已发布、清单申请了 `identity.token` 的应用签发；`GET /.well-known/jwks.json`。`packages/bridge` 的 `verifyAppToken`（Web Crypto，校验算法、kid、签名、iss、aud、exp、iat）。契约 `idp.telos.workspace` 1.1.0。
+- D16：`auth: exchange`：RFC 8693，按（令牌摘要、受众）缓存到过期前 30 秒并清理过期项；身份提供方的拒绝码（如 `invalid_token`）出现在失败的调用记录里，下游收不到任何请求。运行跟随用同一路径取令牌。
+- 端到端（`OIDC=1 BROWSER=1 bash deploy/e2e.sh`，本机，真实 Keycloak 26.8.1 与 idp-host）：Chromium 在 Keycloak 登录页以 bob 登录（授权请求带 PKCE），壳不再出现开发令牌表单；bob 从收件箱事项发起运行——壳的令牌受众只有 idp-workspace，HOST（以 Keycloak 的 JWKS 验证）接受的是交换得到的令牌，运行完成、结果回到收件箱；应用 Desk 经桥拿到应用令牌，Node 中以 `verifyAppToken` 和 Workspace 的 JWKS 校验通过（Go 签、TypeScript 验），同一令牌对另一个应用被拒；退出后再次登录要求重新输入密码。
+- 契约 1.1.0 已登记到 idp-contracts。
+
+**验证**：Go 单元（apptoken、exchange）、集成（app-tokens 场景）、前端（bridge 13 项、web 17 项）、开发模式浏览器冒烟与 OIDC 端到端全部通过。
+
+**局限（不标 PASS）**
+- OIDC 端到端需要 idp-host 镜像，未进 CI（CI 跑开发模式的浏览器冒烟）。
+- 刷新令牌只在页面打开时续期；离开页面超过刷新令牌寿命就要重新登录。
+- 应用令牌签名密钥的轮换：JWKS 只发布当前一把钥匙，换钥匙会让未过期的旧令牌立即失效（最长 5 分钟）。
+- D17（EER 推入收件箱）在 idp-eer 中实现，见其 ADR。

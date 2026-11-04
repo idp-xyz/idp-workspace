@@ -147,3 +147,48 @@ func TestSignatureVector(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestExchange(t *testing.T) {
+	calls := 0
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_ = r.ParseForm()
+		if r.Form.Get("grant_type") != "urn:ietf:params:oauth:grant-type:token-exchange" || r.Form.Get("client_id") != "idp-workspace" || r.Form.Get("client_secret") != "s3cret" || r.Form.Get("audience") != "idp-host" {
+			w.WriteHeader(400)
+			_, _ = io.WriteString(w, `{"error":"invalid_request"}`)
+			return
+		}
+		if r.Form.Get("subject_token") == "revoked" {
+			w.WriteHeader(400)
+			_, _ = io.WriteString(w, `{"error":"invalid_token"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"access_token":"host-token-for-`+r.Form.Get("subject_token")+`","expires_in":300}`)
+	}))
+	defer idp.Close()
+	now := time.Unix(1_790_000_000, 0)
+	x := &Exchanger{TokenURL: idp.URL, ClientID: "idp-workspace", ClientSecret: func() (string, error) { return "s3cret", nil }, Audience: "idp-host", Now: func() time.Time { return now }}
+	var got seen
+	host := fake(t, 202, `{"runId":"r","status":"QUEUED"}`, &got)
+	d := &Dispatcher{Host: &Downstream{Endpoint: host.URL, Auth: AuthExchange, Exchange: x}}
+	r := req(workspace.Target{Kind: workspace.TargetHostRun, Agent: "a"}, `{"message":"hi"}`)
+	if _, f := d.Dispatch(context.Background(), r); f != nil || got.auth != "Bearer host-token-for-user-token" {
+		t.Fatalf("%v %s", f, got.auth)
+	}
+	// cached until 30 s before expiry, then exchanged again
+	_, _ = d.Dispatch(context.Background(), r)
+	if calls != 1 {
+		t.Fatalf("exchanged %d times", calls)
+	}
+	now = now.Add(271 * time.Second)
+	_, _ = d.Dispatch(context.Background(), r)
+	if calls != 2 {
+		t.Fatalf("not refreshed: %d", calls)
+	}
+	// the identity provider's refusal surfaces with its error code; nothing is sent downstream
+	r.Principal.Token = "revoked"
+	before := got
+	if _, f := d.Dispatch(context.Background(), r); f == nil || f.Code != "TARGET_UNAVAILABLE" || !strings.Contains(f.Message, "invalid_token") || got.auth != before.auth {
+		t.Fatalf("%v", f)
+	}
+}

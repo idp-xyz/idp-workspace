@@ -1,5 +1,5 @@
 {
-  "description": "idp.telos.workspace 1.0.0 的示例：每一个都是 idp-workspace 的 Go 值序列化的结果（API 返回或应用桥发送的形状）。",
+  "description": "idp.telos.workspace 1.1.0 的示例：每一个都是 idp-workspace 的 Go 值序列化的结果（API 返回或应用桥发送的形状）。",
   "generatedBy": "go test ./internal/workspace -run TestContract -update",
   "examples": [
     {
@@ -29,7 +29,8 @@
           "context.write",
           "actions.invoke",
           "inbox.read",
-          "ui.notify"
+          "ui.notify",
+          "identity.token"
         ],
         "actions": [
           {
@@ -188,7 +189,8 @@
             "context.write",
             "actions.invoke",
             "inbox.read",
-            "ui.notify"
+            "ui.notify",
+            "identity.token"
           ],
           "actions": [
             {
@@ -326,7 +328,8 @@
             "context.write",
             "actions.invoke",
             "inbox.read",
-            "ui.notify"
+            "ui.notify",
+            "identity.token"
           ],
           "actions": [
             {
@@ -697,6 +700,27 @@
         "error": {
           "code": "CAPABILITY_DENIED",
           "message": "the app did not request inbox.read"
+        }
+      }
+    },
+    {
+      "definition": "BridgeMessage",
+      "value": {
+        "protocol": "idp.bridge/v1",
+        "id": "4",
+        "type": "request",
+        "method": "identity.token"
+      }
+    },
+    {
+      "definition": "BridgeMessage",
+      "value": {
+        "protocol": "idp.bridge/v1",
+        "id": "4",
+        "type": "response",
+        "result": {
+          "expiresAt": "2026-11-04T09:05:00Z",
+          "token": "eyJhbGciOiJFUzI1NiJ9.e30.c2ln"
         }
       }
     },

@@ -37,6 +37,8 @@ export interface AppClient {
   invokeAction<T = unknown>(action: string, input: Record<string, unknown>, itemId?: string): Promise<T>;
   listInbox<T = unknown>(query?: Record<string, unknown>): Promise<T>;
   notify(message: string, level?: 'info' | 'success' | 'warning' | 'error'): Promise<void>;
+  /** a token for the app's own backend (verify it there with verifyAppToken); never the user's token */
+  identityToken(): Promise<{ token: string; expiresAt: string }>;
   on(event: string, listener: (data: unknown) => void): () => void;
   close(): void;
 }
@@ -83,6 +85,7 @@ export function createAppClient(opts: AppClientOptions): AppClient {
     notify: async (message, level = 'info') => {
       await request('ui.notify', { message, level });
     },
+    identityToken: () => request('identity.token'),
     on(event, listener) {
       let set = listeners.get(event);
       if (!set) listeners.set(event, (set = new Set()));

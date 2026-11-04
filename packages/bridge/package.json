@@ -8,7 +8,8 @@
     ".": "./src/index.ts",
     "./shell": "./src/shell.ts",
     "./app": "./src/app.ts",
-    "./webhook": "./src/webhook.ts"
+    "./webhook": "./src/webhook.ts",
+    "./apptoken": "./src/apptoken.ts"
   },
   "files": [
     "src"

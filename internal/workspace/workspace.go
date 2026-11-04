@@ -57,10 +57,11 @@ const (
 	CapActionsInvoke = "actions.invoke"
 	CapInboxRead     = "inbox.read"
 	CapNotify        = "ui.notify"
+	CapIdentityToken = "identity.token" // 1.1.0 (D15): short-lived tokens for the app's own backend
 )
 
 // Capabilities lists the known capabilities.
-var Capabilities = []string{CapContextRead, CapContextWrite, CapActionsInvoke, CapInboxRead, CapNotify}
+var Capabilities = []string{CapContextRead, CapContextWrite, CapActionsInvoke, CapInboxRead, CapNotify, CapIdentityToken}
 
 // ManifestSchemaVersion is the manifest format this workspace reads.
 const ManifestSchemaVersion = "idp.workspace.app/v1"

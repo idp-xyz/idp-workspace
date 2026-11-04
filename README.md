@@ -2,7 +2,7 @@
 
 IDP TELOS 的企业工作入口（Workspace）：工作空间与成员、应用注册与安装、工作收件箱、工作上下文、动作契约与应用桥。设计与决策见 [`docs/adr/ADR-0001-workspace-design.md`](docs/adr/ADR-0001-workspace-design.md)。
 
-状态：**M1、M2 完成并实测**（ADR 第 3、5–7 节）。Workspace 只持有它自己的东西——工作空间、应用发布与安装、收件箱事项（作为视图）、成员的标记与工作上下文、动作调用记录；审批、运行与任务的状态由 idp-eer、idp-host 与应用自己持有。
+状态：**M1–M3 完成并实测**（ADR 第 3、5–10 节）。Workspace 只持有它自己的东西——工作空间、应用发布与安装、收件箱事项（作为视图）、成员的标记与工作上下文、动作调用记录；审批、运行与任务的状态由 idp-eer、idp-host 与应用自己持有。
 
 - **应用注册**：清单 `idp.workspace.app/v1`（H5 入口、桥能力、动作契约、配置 Schema），发布不可变（摘要 = 规范化 JSON 的 sha256），可撤销。
 - **安装**：每个工作空间每个应用一份，配置按清单的 Schema 校验，`revision` + If-Match。
@@ -10,7 +10,8 @@ IDP TELOS 的企业工作入口（Workspace）：工作空间与成员、应用�
 - **动作**：成员调用应用的动作，Workspace 校验成员资格、发布状态、契约角色、事项是否提供该动作、输入 Schema，再转给拥有决定的系统：`host.run`（idp-host 建 AgentRun）、`eer.decision`（idp-eer 对 T2 审批作决定）、`webhook`（HMAC 签名调用应用后端）；每次调用留记录，`Idempotency-Key` 幂等。
 - **应用桥**：`packages/bridge`（TypeScript、零依赖）——壳端只接受应用入口源的消息、只执行清单申请的能力；应用端带超时与关联的请求；webhook 签名校验（与 Go 端同一测试向量）。
 - **Web 壳**（`apps/web`，React）：工作空间、收件箱（SSE 实时推送）、应用导航与沙箱 frame、管理员的管理页（工作空间与成员、发布 / 撤销 / 安装应用、审计）；镜像内置并由服务同源提供。`host.run` 的结果自动回到发起者的收件箱。与真实 idp-host 的联调：`HOST=1 bash deploy/e2e.sh`；浏览器冒烟：`BROWSER=1 bash deploy/e2e.sh`。
-- 契约 `idp.telos.workspace` 1.0.0 在 [`api/contracts/`](api/contracts)（`go test ./internal/workspace -run TestContract`），接口见 [`api/openapi.yaml`](api/openapi.yaml)。
+- **登录与令牌**（M3）：壳以 OIDC 授权码 + PKCE 登录；应用可申请 `identity.token`，由 Workspace 签发给应用后端的短期 ES256 令牌（`/.well-known/jwks.json`，`packages/bridge` 的 `verifyAppToken` 校验）；下游凭据可用 RFC 8693 令牌交换。真实 Keycloak 的端到端：`OIDC=1 BROWSER=1 bash deploy/e2e.sh`。
+- 契约 `idp.telos.workspace` 1.1.0 在 [`api/contracts/`](api/contracts)（`go test ./internal/workspace -run TestContract`），接口见 [`api/openapi.yaml`](api/openapi.yaml)。
 
 ## 运行
 
@@ -26,7 +27,10 @@ npm run dev -w apps/web # 壳的开发服务器，API 代理到 127.0.0.1:8560
 
 ```yaml
 targets:
-  host: {endpoint: https://host.example, auth: forward}            # 转发调用者令牌（需含 idp-host 的 audience）
+  host:                                                              # 令牌交换：成员的令牌换成发给 idp-host 的令牌
+    endpoint: https://host.example
+    auth: exchange
+    exchange: {tokenUrl: https://idp.example/realms/idp/protocol/openid-connect/token, clientId: idp-workspace, clientSecretFile: /run/secrets/exchange, audience: idp-host}
   eer:  {endpoint: https://eer.example, auth: static, tokenFile: /run/secrets/eer, tenantId: eer-acme}
 webhooks: {secretFile: /run/secrets/webhook}                         # 至少 32 字节
 ```

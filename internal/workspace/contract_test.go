@@ -28,7 +28,7 @@ var update = flag.Bool("update", false, "regenerate api/contracts/examples.json 
 
 const (
 	contractDir = "../../api/contracts"
-	contractID  = "urn:idp:telos:workspace:1.0.0"
+	contractID  = "urn:idp:telos:workspace:1.1.0"
 )
 
 type noLoader struct{}
@@ -113,7 +113,7 @@ const (
 func exampleManifest() workspace.Manifest {
 	return workspace.Manifest{SchemaVersion: workspace.ManifestSchemaVersion, Name: "orders", Version: "1.2.0", Title: "Orders", Description: "Order desk: holds, reviews and approvals.",
 		Publisher: "IDP Parcel", Entry: &workspace.Entry{URL: "https://orders.apps.example/workspace"},
-		Capabilities: []string{workspace.CapContextRead, workspace.CapContextWrite, workspace.CapActionsInvoke, workspace.CapInboxRead, workspace.CapNotify},
+		Capabilities: []string{workspace.CapContextRead, workspace.CapContextWrite, workspace.CapActionsInvoke, workspace.CapInboxRead, workspace.CapNotify, workspace.CapIdentityToken},
 		Actions: []workspace.ActionContract{
 			{Name: "order.review", Title: "Ask the order assistant", Input: json.RawMessage(`{"type":"object","required":["message"],"properties":{"message":{"type":"string","minLength":1,"maxLength":4000}},"additionalProperties":false}`),
 				Target: workspace.Target{Kind: workspace.TargetHostRun, Agent: "order-assistant"}},
@@ -187,9 +187,11 @@ func buildExamples(t *testing.T) []byte {
 		Result: json.RawMessage(`{"capabilities":["context.read","actions.invoke"],"locale":"zh-CN","protocol":"idp.bridge/v1","theme":"light","workspace":{"name":"us-ops","workspaceId":"` + wsID + `"}}`)})
 	add("BridgeMessage", workspace.BridgeMessage{Protocol: workspace.BridgeProtocol, ID: "2", Type: workspace.BridgeRequest, Method: "actions.invoke", Params: json.RawMessage(`{"action":"order.hold","input":{"orderId":"1001","reason":"address check"}}`)})
 	add("BridgeMessage", workspace.BridgeMessage{Protocol: workspace.BridgeProtocol, ID: "3", Type: workspace.BridgeResponse, Error: &workspace.Problem{Code: "CAPABILITY_DENIED", Message: "the app did not request inbox.read"}})
+	add("BridgeMessage", workspace.BridgeMessage{Protocol: workspace.BridgeProtocol, ID: "4", Type: workspace.BridgeRequest, Method: "identity.token"})
+	add("BridgeMessage", workspace.BridgeMessage{Protocol: workspace.BridgeProtocol, ID: "4", Type: workspace.BridgeResponse, Result: json.RawMessage(`{"expiresAt":"2026-11-04T09:05:00Z","token":"eyJhbGciOiJFUzI1NiJ9.e30.c2ln"}`)})
 	add("BridgeMessage", workspace.BridgeMessage{Protocol: workspace.BridgeProtocol, Type: workspace.BridgeEvent, Event: "context.changed", Data: json.RawMessage(`{"entities":[{"id":"1002","type":"order"}],"version":4}`)})
 	add("Problem", workspace.Problem{Code: "ACTION_NOT_OFFERED", Message: "the item does not offer orders/order.hold"})
-	f := examplesFile{Description: "idp.telos.workspace 1.0.0 的示例：每一个都是 idp-workspace 的 Go 值序列化的结果（API 返回或应用桥发送的形状）。", GeneratedBy: "go test ./internal/workspace -run TestContract -update", Examples: xs}
+	f := examplesFile{Description: "idp.telos.workspace 1.1.0 的示例：每一个都是 idp-workspace 的 Go 值序列化的结果（API 返回或应用桥发送的形状）。", GeneratedBy: "go test ./internal/workspace -run TestContract -update", Examples: xs}
 	raw, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		t.Fatal(err)
