@@ -1,0 +1,19 @@
+# idp-workspace on Kubernetes (deploy/kubernetes/README.md). tests/deploy keeps these manifests
+# internally consistent (labels, selectors, secret references, mounts, hardening); idp-telos-go
+# deploy/kubernetes composes them into the platform and applies them to a kind cluster in its CI.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: idp-workspace
+resources:
+  - namespace.yaml
+  - workspace.yaml
+  - migrate-job.yaml
+  - networkpolicy.yaml
+labels:
+  - pairs:
+      app.kubernetes.io/name: idp-workspace
+      app.kubernetes.io/part-of: idp-telos
+images:
+  - name: idp-workspace
+    newName: registry.example.com/idp/idp-workspace   # set to the image built by deploy/build.sh, pinned by digest
+    digest: sha256:0000000000000000000000000000000000000000000000000000000000000000

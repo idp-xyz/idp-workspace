@@ -1,0 +1,160 @@
+# idp-workspace: the API, the web shell (served from the image), the inbox streams and the run
+# followers in one Deployment. Replicas share nothing but the database; a run follower lives in the
+# replica that started the run (ADR-0001 D11 limit).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: idp-workspace
+  namespace: idp-workspace
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: idp-workspace-env
+  namespace: idp-workspace
+data:
+  IDP_WORKSPACE_LISTEN: "0.0.0.0:8560"
+  IDP_WORKSPACE_CONFIG: "/etc/idp/config/workspace.yaml"
+  IDP_WORKSPACE_ISSUER: "https://idp.example.com/realms/idp"
+  IDP_WORKSPACE_AUDIENCE: "idp-workspace"
+  IDP_WORKSPACE_JWKS_URL: "https://idp.example.com/realms/idp/protocol/openid-connect/certs"
+  IDP_WORKSPACE_TENANT_CLAIM: "tenant_id"
+  IDP_WORKSPACE_ROLES_CLAIM: "roles"
+  IDP_WORKSPACE_SUBJECT_CLAIM: "preferred_username"
+  IDP_WORKSPACE_OIDC_CLIENT_ID: "workspace-shell"
+  IDP_WORKSPACE_PUBLIC_URL: "https://workspace.example.com"
+  IDP_WORKSPACE_SIGNING_KEY_FILE: "/etc/idp/signing/signing.pem"
+  IDP_WORKSPACE_TLS_CERT_FILE: "/etc/idp/tls/tls.crt"
+  IDP_WORKSPACE_TLS_KEY_FILE: "/etc/idp/tls/tls.key"
+  IDP_IDENTITY_CA_FILE: "/etc/idp/identity-ca/ca.crt"
+  IDP_METRICS_LISTEN: "0.0.0.0:9566"
+  IDP_LOG_LEVEL: "info"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.observability.svc.cluster.local:4318"
+---
+# Where actions go (ADR-0001 D4, D16): the member's token is exchanged at the IdP for the target's
+# audience. No secrets inside: the client secret and the webhook key are files from the Secrets.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: idp-workspace-config
+  namespace: idp-workspace
+data:
+  workspace.yaml: |
+    targets:
+      host:
+        endpoint: https://idp-host.idp-host.svc.cluster.local:8450
+        caFile: /etc/idp/service-ca/ca.crt
+        auth: exchange
+        exchange: {tokenUrl: "https://idp.example.com/realms/idp/protocol/openid-connect/token", clientId: idp-workspace, clientSecretFile: /etc/idp/exchange/client-secret, audience: idp-host, caFile: /etc/idp/identity-ca/ca.crt}
+      eer:
+        endpoint: https://eer-api.idp-eer.svc.cluster.local:8080
+        caFile: /etc/idp/service-ca/ca.crt
+        auth: exchange
+        exchange: {tokenUrl: "https://idp.example.com/realms/idp/protocol/openid-connect/token", clientId: idp-workspace, clientSecretFile: /etc/idp/exchange/client-secret, audience: eer-runtime, caFile: /etc/idp/identity-ca/ca.crt}
+        tenantId: pilot
+    webhooks:
+      secretFile: /etc/idp/webhook/secret
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: idp-workspace
+  namespace: idp-workspace
+  labels:
+    app.kubernetes.io/component: workspace
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: workspace
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: workspace
+    spec:
+      serviceAccountName: idp-workspace
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: workspace
+          image: idp-workspace
+          command: ["/usr/local/bin/idp-workspace", "serve"]
+          ports:
+            - name: api
+              containerPort: 8560
+            - name: metrics
+              containerPort: 9566
+          envFrom:
+            - configMapRef:
+                name: idp-workspace-env
+          env:
+            - name: IDP_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: idp-workspace-db
+                  key: service-url
+          volumeMounts:
+            - {name: config, mountPath: /etc/idp/config, readOnly: true}
+            - {name: tls, mountPath: /etc/idp/tls, readOnly: true}
+            - {name: identity-ca, mountPath: /etc/idp/identity-ca, readOnly: true}
+            - {name: service-ca, mountPath: /etc/idp/service-ca, readOnly: true}
+            - {name: signing, mountPath: /etc/idp/signing, readOnly: true}
+            - {name: exchange, mountPath: /etc/idp/exchange, readOnly: true}
+            - {name: webhook, mountPath: /etc/idp/webhook, readOnly: true}
+          readinessProbe:
+            httpGet: {path: /readyz, port: api, scheme: HTTPS}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: api, scheme: HTTPS}
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 200m, memory: 128Mi}
+            limits: {cpu: "2", memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - {name: config, configMap: {name: idp-workspace-config}}
+        - {name: tls, secret: {secretName: idp-workspace-tls}}
+        - {name: identity-ca, secret: {secretName: idp-workspace-identity-ca, optional: true}}
+        - {name: service-ca, secret: {secretName: idp-workspace-service-ca, optional: true}}
+        - {name: signing, secret: {secretName: idp-workspace-signing-key}}
+        - {name: exchange, secret: {secretName: idp-workspace-exchange}}
+        - {name: webhook, secret: {secretName: idp-workspace-webhook}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: idp-workspace
+  namespace: idp-workspace
+  labels:
+    app.kubernetes.io/component: workspace
+spec:
+  selector:
+    app.kubernetes.io/component: workspace
+  ports:
+    - name: api
+      port: 8560
+      targetPort: api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: idp-workspace
+  namespace: idp-workspace
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: workspace
