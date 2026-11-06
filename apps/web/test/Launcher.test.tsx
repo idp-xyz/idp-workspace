@@ -55,6 +55,24 @@ describe('Launcher', () => {
     expect((screen.getByLabelText('message') as HTMLTextAreaElement).value).toBe(''); // ready for the next one
   });
 
+  it('keeps a conversation: the next message names the thread of the previous run, until a new one is started', async () => {
+    sessionStorage.clear();
+    const invoke = vi.fn(async () => ({ invocationId: 'inv-1', app: 'orders', action: 'order.review', status: 'succeeded' as const, result: { kind: 'run', id: 'run-1', threadId: 'thr_9' } }));
+    const workspace = vi.fn(async () => ({ workspace: ws, roles: [], member: true }));
+    render(<Launcher api={{ invoke, workspace } as unknown as Api} ws={ws} apps={[orders]} confirm={async () => true} notify={() => {}} />);
+    await screen.findByText('Ask the order assistant');
+    const send = async (text: string) => { fireEvent.change(screen.getByLabelText('message'), { target: { value: text } }); fireEvent.click(screen.getByText('发起')); await waitFor(() => expect(invoke).toHaveBeenCalledTimes(sent + 1)); sent += 1; };
+    let sent = 0;
+    await send('My favourite colour is teal');
+    expect(invoke).toHaveBeenLastCalledWith('us-ops', { app: 'orders', action: 'order.review', input: { message: 'My favourite colour is teal' } }); // the first message starts the thread
+    await screen.findByText('新对话');
+    await send('What did I just say?');
+    expect(invoke).toHaveBeenLastCalledWith('us-ops', { app: 'orders', action: 'order.review', input: { message: 'What did I just say?' }, threadId: 'thr_9' });
+    fireEvent.click(screen.getByText('新对话'));
+    await send('A fresh start');
+    expect(invoke).toHaveBeenLastCalledWith('us-ops', { app: 'orders', action: 'order.review', input: { message: 'A fresh start' } });
+  });
+
   it('says so when no installed app has an action to start', async () => {
     const workspace = vi.fn(async () => ({ workspace: ws, roles: [], member: true }));
     const onlyDecisions = { ...orders, manifest: { ...orders.manifest, actions: [orders.manifest.actions[1]] } };

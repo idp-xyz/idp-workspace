@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"idp-workspace/adapters/store/postgres"
@@ -29,6 +30,8 @@ var invocationStatus = map[string]int{
 // the contract's roles, the inbox item it is taken from (open, offering this action), the input
 // schema, then the target. Every forwarded attempt is recorded; Idempotency-Key makes a retry return
 // the recorded invocation instead of acting twice.
+var threadIDRE = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
+
 func (a *API) invoke(r *http.Request, p authorization.Principal) (int, any, error) {
 	raw, err := readBody(r)
 	if err != nil {
@@ -39,6 +42,9 @@ func (a *API) invoke(r *http.Request, p authorization.Principal) (int, any, erro
 		Action string          `json:"action"`
 		Input  json.RawMessage `json:"input"`
 		ItemID string          `json:"itemId"`
+		// ThreadID continues an idp-host conversation: the run joins that thread instead of starting a new one (the
+		// result of an earlier host.run names it). Optional, only host.run uses it.
+		ThreadID string `json:"threadId"`
 	}
 	if err := decodeRaw(raw, &in); err != nil {
 		return 0, nil, err
@@ -112,9 +118,20 @@ func (a *API) invoke(r *http.Request, p authorization.Principal) (int, any, erro
 	if err := schema.Validate(s, input); err != nil {
 		return 0, nil, transport.Fail(http.StatusUnprocessableEntity, "INVALID_INPUT", err.Error())
 	}
+	if in.ThreadID != "" && !threadIDRE.MatchString(in.ThreadID) {
+		return 0, nil, transport.Fail(http.StatusUnprocessableEntity, "INVALID", "threadId must be 1-64 characters of letters, digits, '_', '-' or '.'")
+	}
 	wctx, err := a.Store.GetContext(r.Context(), p.Tenant, m.Workspace.ID, p.Subject)
 	if err != nil {
 		return 0, nil, err
+	}
+	if in.ThreadID != "" { // this call's thread, without touching the stored work context
+		c := workspace.WorkContext{WorkspaceID: m.Workspace.ID, Subject: p.Subject}
+		if wctx != nil {
+			c = *wctx
+		}
+		c.Thread = in.ThreadID
+		wctx = &c
 	}
 	canon, err := canonical.Canonical(input)
 	if err != nil {

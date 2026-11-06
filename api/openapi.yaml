@@ -112,7 +112,7 @@ paths:
         the recorded invocation (Idempotent-Replayed: true); the same key with another body is 409. The
         inbox item is not changed: its producer closes it. ws-member
       parameters: [{name: Idempotency-Key, in: header, schema: {type: string, maxLength: 200}}]
-      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [app, action], properties: {app: {type: string}, action: {type: string}, input: {type: object}, itemId: {type: string}}}}}}
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [app, action], properties: {app: {type: string}, action: {type: string}, input: {type: object}, itemId: {type: string}, threadId: {type: string, pattern: '^[A-Za-z0-9_.-]{1,64}$', description: 'continue this idp-host conversation (host.run only): the run joins the thread; the result of an earlier host.run names it'}}}}}}
       responses: {'201': {description: forwarded, content: {application/json: {schema: {$ref: '#/components/schemas/Invocation'}}}}, '200': {description: replayed}, '403': {$ref: '#/components/responses/Error'}, '404': {$ref: '#/components/responses/Error'}, '409': {description: 'refused before forwarding, or by the target ({error, invocation})'}, '422': {$ref: '#/components/responses/Error'}, '502': {description: 'target unavailable ({error, invocation})'}}
   /v1/workspaces/{ws}/invocations:
     parameters: [{$ref: '#/components/parameters/ws'}]

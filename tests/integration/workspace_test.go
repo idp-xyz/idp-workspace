@@ -529,6 +529,17 @@ func TestWorkspaceEndToEnd(t *testing.T) {
 		if res := out["result"].(map[string]any); res["system"] != "host" || res["id"] != run.Body["runId"] {
 			t.Fatalf("%v", res)
 		}
+		// a conversation: an invoke naming a threadId joins that thread (the work context's own is left alone), a bad id is refused
+		st, out, _ = invoke("bob", map[string]any{"app": "orders", "action": "order.review", "threadId": "thr_chat_7", "input": map[string]any{"message": "And order 1002?"}})
+		if st != 201 {
+			t.Fatalf("%d %v", st, out)
+		}
+		if joined := e.host.find(func(p string) bool { return strings.HasSuffix(p, "/runs") }); joined.Body["threadId"] != "thr_chat_7" {
+			t.Fatalf("the run did not join the named thread: %+v", joined.Body)
+		}
+		if st, out, _ := invoke("bob", map[string]any{"app": "orders", "action": "order.review", "threadId": "../etc", "input": map[string]any{"message": "x"}}); st != 422 {
+			t.Fatalf("a malformed threadId was accepted: %d %v", st, out)
+		}
 		// D11: the run's result comes back into bob's inbox (only bob's)
 		runID := run.Body["runId"].(string)
 		var result map[string]any
@@ -543,7 +554,7 @@ func TestWorkspaceEndToEnd(t *testing.T) {
 		if result == nil || result["summary"] != "Order 1001 waits for customs." || result["producer"] != "idp-workspace" || result["ref"].(map[string]any)["id"] != runID {
 			t.Fatalf("run result: %v", result)
 		}
-		if got := e.host.find(func(p string) bool { return strings.HasSuffix(p, "/events") }); got.Path != "/v1/runs/"+runID+"/events" || got.Auth != "Bearer "+e.tokens["bob"] {
+		if got := e.host.find(func(p string) bool { return p == "/v1/runs/"+runID+"/events" }); got.Path != "/v1/runs/"+runID+"/events" || got.Auth != "Bearer "+e.tokens["bob"] {
 			t.Fatalf("followed with %+v", got)
 		}
 		if items := e.must(200, "GET", "/v1/workspaces/us-ops/inbox?kind=run", "carol", nil)["items"].([]any); len(items) != 0 {
@@ -574,10 +585,10 @@ func TestWorkspaceEndToEnd(t *testing.T) {
 		}
 		e.must(404, "POST", "/v1/workspaces/us-ops/actions/invoke", "dan", map[string]any{"app": "orders", "action": "order.review", "input": map[string]any{"message": "x"}})
 		// the record: bob's own invocations, all of them for the administrator
-		if mine := e.must(200, "GET", "/v1/workspaces/us-ops/invocations", "bob", nil)["invocations"].([]any); len(mine) != 3 {
+		if mine := e.must(200, "GET", "/v1/workspaces/us-ops/invocations", "bob", nil)["invocations"].([]any); len(mine) != 4 {
 			t.Fatalf("bob: %v", mine)
 		}
-		if all := e.must(200, "GET", "/api/v1/workspaces/us-ops/invocations", "alice", nil)["invocations"].([]any); len(all) != 4 {
+		if all := e.must(200, "GET", "/api/v1/workspaces/us-ops/invocations", "alice", nil)["invocations"].([]any); len(all) != 5 {
 			t.Fatalf("all: %v", all)
 		}
 	})

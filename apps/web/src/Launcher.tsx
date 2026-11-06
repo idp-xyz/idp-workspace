@@ -102,6 +102,10 @@ function ActionForm({ api, ws, app, contract, confirm, notify }: { api: Api; ws:
   const fields = fieldsOf(contract.input);
   const [values, setValues] = useState<Record<string, string | boolean>>({});
   const [busy, setBusy] = useState(false);
+  // a conversation: an action that starts idp-host runs names the thread of the previous run, so the agent has the history
+  const threadKey = `idp.thread/${ws.name}/${app.manifest.name}/${contract.name}`;
+  const [thread, setThread] = useState<string>(() => sessionStorage.getItem(threadKey) ?? '');
+  const newConversation = () => { sessionStorage.removeItem(threadKey); setThread(''); };
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     let input: Record<string, unknown>;
@@ -114,7 +118,9 @@ function ActionForm({ api, ws, app, contract, confirm, notify }: { api: Api; ws:
     if (contract.confirm && !(await confirm(`${app.manifest.title}：${contract.title}？`))) return;
     setBusy(true);
     try {
-      const inv = await api.invoke(ws.name, { app: app.manifest.name, action: contract.name, input });
+      const inv = await api.invoke(ws.name, { app: app.manifest.name, action: contract.name, input, ...(thread ? { threadId: thread } : {}) });
+      const next = (inv.result as { kind?: string; threadId?: string } | undefined);
+      if (contract.target.kind === 'host.run' && next?.threadId) { sessionStorage.setItem(threadKey, next.threadId); setThread(next.threadId); }
       if (inv.status === 'failed') {
         notify(`${contract.title} 失败：${inv.error?.code ?? ''} ${inv.error?.message ?? ''}`, 'error');
       } else {
@@ -132,7 +138,7 @@ function ActionForm({ api, ws, app, contract, confirm, notify }: { api: Api; ws:
       <div className="item-head"><span className="kind">{app.manifest.title}</span><strong>{contract.title}</strong></div>
       {contract.description && <p className="muted">{contract.description}</p>}
       {fields.map((f) => <FieldInput key={f.name} field={f} value={values[f.name]} onChange={(v) => setValues((cur) => ({ ...cur, [f.name]: v }))} />)}
-      <div className="actions"><button type="submit" disabled={busy}>发起</button></div>
+      <div className="actions"><button type="submit" disabled={busy}>发起</button>{contract.target.kind === 'host.run' && thread && <button type="button" className="secondary" onClick={newConversation} title={`对话 ${thread}`}>新对话</button>}{contract.target.kind === 'host.run' && thread && <span className="muted"> 对话中（Agent 记得这次会话里说过的话）</span>}</div>
     </form>
   );
 }
