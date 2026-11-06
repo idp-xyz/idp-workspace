@@ -5,6 +5,7 @@ import type { Tokens } from './oidc.ts';
 import { Admin } from './Admin.tsx';
 import { AppFrame } from './AppFrame.tsx';
 import { Inbox } from './Inbox.tsx';
+import { Launcher, launchable } from './Launcher.tsx';
 import type { ShellUI } from './bridgeHandlers.ts';
 import type { InboxItem, InstalledApp, Me, Workspace } from './types.ts';
 
@@ -107,6 +108,7 @@ export function App(props: { api?: Api }) {
       </header>
       <nav>
         <button className={view === 'inbox' ? 'active' : ''} onClick={() => setView('inbox')}>收件箱{open > 0 && <span className="badge">{open}</span>}</button>
+        {apps.some((a) => launchable(a).length > 0) && <button className={view === '@launch' ? 'active' : ''} onClick={() => setView('@launch')}>发起</button>}
         {me?.roles.includes('ws-admin') && <button className={view === '@admin' ? 'active' : ''} onClick={() => setView('@admin')}>管理</button>}
         {apps.filter((a) => a.manifest.entry).map((a) => (
           <button key={a.manifest.name} className={view === a.manifest.name ? 'active' : ''} onClick={() => setView(a.manifest.name)}>{a.manifest.title}</button>
@@ -116,6 +118,7 @@ export function App(props: { api?: Api }) {
         {error && <p className="error" role="alert">{error}</p>}
         {!ws && <p className="muted">你还不属于任何工作空间。</p>}
         {ws && view === 'inbox' && <Inbox api={api} ws={ws} items={items} apps={apps} confirm={ui.confirm} notify={notify} onChanged={(it) => setItems((cur) => cur.map((x) => x.itemId === it.itemId ? it : x))} />}
+        {ws && view === '@launch' && <Launcher api={api} ws={ws} apps={apps} confirm={ui.confirm} notify={notify} />}
         {view === '@admin' && me?.roles.includes('ws-admin') && <Admin api={api} workspaces={workspaces} current={ws} notify={notify} onWorkspaces={() => api.workspaces().then(setWorkspaces).catch(() => {})} />}
         {ws && current && <AppFrame api={api} ws={ws} app={current} ui={ui} contextVersion={0} />}
       </main>

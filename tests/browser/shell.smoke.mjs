@@ -28,6 +28,11 @@ try {
     body: JSON.stringify({ externalRef: 'browser:1', kind: 'notification', title: 'Live from the stream', ref: { system: 'external', kind: 'n', id: 'b1' } }) });
   if (res.status !== 201) fail('producer put ' + res.status);
   await page.waitForSelector('text=Live from the stream', { timeout: 15000 });
+  // an action no item carries, started from the shell's own form (D19); the demo's webhook does not
+  // listen, so what comes back is the workspace's refusal
+  await page.click('nav >> text=发起');
+  await page.click('form[aria-label="Demo：Ping"] >> button:has-text("发起")');
+  await page.waitForSelector('.toast >> text=Ping 失败：TARGET_UNAVAILABLE', { timeout: 10000 });
   // the framed app
   await page.click('nav >> text=Demo');
   const frame = await (await page.waitForSelector('iframe.app-frame')).contentFrame();
@@ -40,7 +45,7 @@ try {
   if (sandbox !== 'allow-scripts allow-forms allow-same-origin') fail('sandbox ' + sandbox);
   const unexpected = errors.filter((e) => !/TARGET_UNAVAILABLE|502|CAPABILITY_DENIED/.test(e));
   if (unexpected.length) fail('page errors: ' + unexpected.join(' | '));
-  console.log('browser: sign-in, inbox, live stream item, framed app through the bridge ok');
+  console.log('browser: sign-in, inbox, live stream item, an action started from the shell, framed app through the bridge ok');
 
   // ---- the administrator does everything through the screens, no API calls ----
   const admin = await browser.newPage();

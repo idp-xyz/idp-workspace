@@ -26,7 +26,16 @@ function fakeApi() {
       if (call.action === 'order.hold' && (call.input as Record<string, unknown>).orderId === 'x') throw new ApiError(422, 'INVALID_INPUT', '/orderId: does not match pattern');
       return { invocationId: 'inv-1', app: 'orders', action: String(call.action), status: 'succeeded', result: { httpStatus: 200 } };
     },
-    inbox: async () => [{ itemId: 'i1', kind: 'approval', title: 'T', priority: 'high', status: 'open', entities: [], summary: 'secret detail', producer: 'svc' }],
+    inbox: async () => [
+      { itemId: 'i1', kind: 'approval', title: 'T', priority: 'high', status: 'open', entities: [], summary: 'secret detail', producer: 'svc', externalRef: 'execution:1/approval' },
+      { itemId: 'i2', kind: 'run', title: 'Ask — finished', priority: 'normal', status: 'open', entities: [], summary: 'the answer', producer: 'idp-workspace', externalRef: 'run:r1' },
+      { itemId: 'i3', kind: 'run', title: 'Other — finished', priority: 'normal', status: 'open', entities: [], summary: 'not yours', producer: 'idp-workspace', externalRef: 'run:r2' },
+    ],
+    // the member's invocation records: run r1 was started by this app, r2 by another one
+    invocations: async () => [
+      { invocationId: 'v1', app: 'orders', action: 'order.ask', target: { kind: 'host.run', agent: 'a' }, status: 'succeeded', result: { id: 'r1' } },
+      { invocationId: 'v2', app: 'notes', action: 'notes.ask', target: { kind: 'host.run', agent: 'a' }, status: 'succeeded', result: { id: 'r2' } },
+    ],
   } as unknown as Api;
   return { api, calls };
 }
@@ -51,6 +60,17 @@ describe('shellHandlers', () => {
     expect(list[0]).not.toHaveProperty('summary');
     h.notify!({ message: 'saved', level: 'success' });
     expect(notes).toEqual(['Orders: saved']);
+  });
+
+  it('shows an app the outcome of the runs it started for the member, and of no other item (D20)', async () => {
+    const { api } = fakeApi();
+    const h = shellHandlers(api, ws, app, { notify: () => {}, confirm: async () => true, locale: 'en', theme: 'light' });
+    const list = await h.listInbox!({}) as Array<Record<string, unknown>>;
+    expect(list.map((i) => i.itemId)).toEqual(['i1', 'i2', 'i3']);
+    expect(list[0]).not.toHaveProperty('summary');
+    expect(list[1]).toMatchObject({ externalRef: 'run:r1', summary: 'the answer' });
+    expect(list[2]).not.toHaveProperty('summary');
+    expect(list[2]).not.toHaveProperty('externalRef');
   });
 
   it('asks the member before a confirm action; a decline never reaches the API', async () => {

@@ -81,6 +81,10 @@ export class Api {
     return this.request<WorkContext>('PUT', `/v1/workspaces/${encodeURIComponent(ws)}/context`,
       { entities: ctx.entities ?? [], app: ctx.app, thread: ctx.thread, itemId: ctx.itemId }, version !== undefined ? { 'If-Match': String(version) } : {});
   }
+  /** the member's own invocations in the workspace, newest first */
+  invocations(ws: string, limit = 100) {
+    return this.request<{ invocations: Invocation[] }>('GET', `/v1/workspaces/${encodeURIComponent(ws)}/invocations?limit=${limit}`).then((r) => r.invocations);
+  }
   /** invoke an action; a fresh idempotency key per user gesture makes a double click harmless. */
   invoke(ws: string, call: { app: string; action: string; input?: Record<string, unknown>; itemId?: string }, key: string = crypto.randomUUID()): Promise<Invocation> {
     return this.request<Invocation>('POST', `/v1/workspaces/${encodeURIComponent(ws)}/actions/invoke`, call, { 'Idempotency-Key': key });

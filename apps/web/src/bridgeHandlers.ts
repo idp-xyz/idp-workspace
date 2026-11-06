@@ -5,7 +5,7 @@ import { BridgeError } from '@idp-workspace/bridge/shell';
 import type { ShellHandlers } from '@idp-workspace/bridge/shell';
 import { ApiError } from './api.ts';
 import type { Api } from './api.ts';
-import type { Entity, InstalledApp, Workspace } from './types.ts';
+import type { Entity, InstalledApp, Invocation, Workspace } from './types.ts';
 
 export interface ShellUI {
   notify(message: string, level: string): void;
@@ -51,8 +51,19 @@ export function shellHandlers(api: Api, ws: Workspace, app: InstalledApp, ui: Sh
       const inv = await api.invoke(ws.name, { app: app.manifest.name, action: name, input, ...(typeof p.itemId === 'string' ? { itemId: p.itemId } : {}) }).catch(asBridgeError);
       return { invocationId: inv.invocationId, status: inv.status, result: inv.result };
     },
-    listInbox: (p) => api.inbox(ws.name, typeof p.kind === 'string' ? { kind: p.kind } : {}).then((items) =>
-      items.map((i) => ({ itemId: i.itemId, kind: i.kind, title: i.title, priority: i.priority, status: i.status, entities: i.entities }))).catch(asBridgeError),
+    // the headline of every item; D20: the outcome (summary) only of the runs this app started for the
+    // member, as the member's invocation records name them
+    listInbox: async (p) => {
+      const [items, invocations] = await Promise.all([
+        api.inbox(ws.name, typeof p.kind === 'string' ? { kind: p.kind } : {}),
+        api.invocations(ws.name).catch((): Invocation[] => []),
+      ]).catch(asBridgeError);
+      const own = new Set(invocations
+        .filter((v) => v.app === app.manifest.name && v.target?.kind === 'host.run' && typeof v.result?.id === 'string')
+        .map((v) => `run:${String(v.result!.id)}`));
+      return items.map((i) => ({ itemId: i.itemId, kind: i.kind, title: i.title, priority: i.priority, status: i.status, entities: i.entities,
+        ...(i.kind === 'run' && own.has(i.externalRef) ? { externalRef: i.externalRef, summary: i.summary } : {}) }));
+    },
     // D15: a token for the app's own backend, issued by the workspace - never the member's token
     identityToken: () => api.appToken(ws.name, app.manifest.name).then((t) => ({ token: t.token, expiresAt: t.expiresAt })).catch(asBridgeError),
     notify: (p) => {

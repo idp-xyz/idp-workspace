@@ -16,7 +16,7 @@ export interface InboxItem {
   version: number; createdAt: string; updatedAt: string; readAt?: string; archivedAt?: string;
 }
 export interface WorkContext { workspaceId: string; subject: string; entities: Entity[]; app?: string; thread?: string; itemId?: string; version: number }
-export interface Invocation { invocationId: string; app: string; action: string; status: 'succeeded' | 'failed'; result?: Record<string, unknown>; error?: { code: string; message: string } }
+export interface Invocation { invocationId: string; app: string; action: string; target?: Target; status: 'succeeded' | 'failed'; result?: Record<string, unknown>; error?: { code: string; message: string } }
 
 export interface Me { subject: string; tenant: string; roles: string[] }
 export interface Member { subject: string; roles: string[]; addedBy: string; addedAt: string }

@@ -146,3 +146,19 @@
 - 每个等待中的运行占一个 goroutine 和一条到 HOST 的长连接，最长为确认超时加 10 分钟（HOST 允许确认超时到 86400 秒）。
 - `outcome` 与 `interrupts` 的形状来自 idp-host 的实现与 AG-UI，不在 `idp.telos.host` 契约里，消费方契约测试钉不住；中断里的 `expiresAt` 精确到秒，`dueAt` 可能比 HOST 记录的过期时间早不到一秒。
 - 没有跑 `make test-web` 与浏览器冒烟：这次没有改界面，复现环境用的是不带网页壳的镜像。
+
+## 13. 从界面发起（2026-11-06）
+
+| # | 决策 | 理由 |
+|---|---|---|
+| D19 | **壳里的发起入口**：导航里的"发起"列出已安装应用中不依附事项的动作——目标不是 `eer.decision`，契约未限定角色或与成员在本工作空间的角色相交——并按动作的输入 JSON Schema 生成表单（字符串、数字、整数、布尔、枚举各成控件，其余按 JSON 填写；必填与类型在提交前检查），以 `POST /v1/workspaces/{ws}/actions/invoke` 发起；`host.run` 的结果照 D11 回到收件箱 | 只声明动作、没有页面的应用此前只能经 API 发起；服务端照常按 D4 校验成员资格、角色与输入 Schema，壳只收集输入。`eer.decision` 决定的是一个打开的事项，留在事项上 |
+| D20 | **应用读到自己发起的运行结果**：桥的 `inbox.list` 对每个事项仍只给标题、种类、优先级、状态与实体；对该应用为本成员经 `host.run` 发起的运行（以成员的调用记录为准）所对应的 run 事项，另给 `externalRef` 与 `summary`。契约的 `result` 不约束字段，不改契约版本 | 聊天式的应用页要显示 agent 的回答；放开所有事项的内容会让第三方页面读到别的系统的审批与结果，只放开它自己替成员请求的那一份 |
+
+**验证要求**：前端单元（表单生成与输入转换、按角色与目标筛选、D20 只放开自己的运行）；开发模式浏览器冒烟里从"发起"提交一个动作并看到服务端的应答；平台 kind 部署中成员从"发起"与应用页各问一次 agent、在界面里看到回答（idp-telos-go `tests/kind/full.sh`）。
+
+## 14. D19、D20 实施结果（2026-11-06，WSL 实测）
+
+- D19：`apps/web/src/Launcher.tsx`（`launchable`、`fieldsOf`、`buildInput` 为纯函数）；导航在有可发起的动作时显示"发起"；成员的工作空间角色取自 `GET /v1/workspaces/{ws}`，取到之前不列任何动作。
+- D20：`bridgeHandlers.ts` 的 `inbox.list` 并行读取收件箱与成员的调用记录（`GET /v1/workspaces/{ws}/invocations`），只给本应用以 `host.run` 发起的运行的 run 事项附上 `externalRef` 与 `summary`；读调用记录失败时按"没有自己的运行"处理。
+- 前端单元：bridge 13 项、web 22 项（新增发起入口 4 项、D20 1 项）；`BROWSER=1 bash deploy/e2e.sh` 的冒烟从"发起"提交 Demo 的 Ping，壳显示服务端的 `TARGET_UNAVAILABLE`。
+- 平台 kind（idp-telos-go `MODEL=live` 的 `tests/kind/full.sh` 与浏览器）：bob 从"发起"问订单助手，回答（本机模型、引用 CMI 中的规定）约 2 秒后进收件箱；在平台的"助手"应用页（`idp.bridge/v1` 手写客户端）中文提问得到引用规定的回答、让代码助手算 2 的 100 次方得到沙箱的输出——应用页只读到它自己发起的运行的内容。
