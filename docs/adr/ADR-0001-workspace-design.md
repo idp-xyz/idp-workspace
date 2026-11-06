@@ -123,3 +123,26 @@
 - 联机验证：EER 的 `TestLiveWorkspace` 对真实 Workspace 镜像推入两项、结束一项、再以新投影器从头重放，两项状态不变；Chromium 中 approver 成员看到 "Approval needed: execution:…" 与"Approve / Reject"按钮。
 - 未验证：从壳里点"Approve"到真实 EER（Temporal 中的 T2 执行）完成一次决定——需要 EER 的 OIDC 发行者与 Workspace 用户的主体映射。
 - 2026-11-04 补充：上面"未验证"的一条已由平台验收证明——idp-telos-go `deploy/compose/e2e.sh` 的 PATH B 中，bob 从收件箱批准一个真实的 T2 执行（Temporal 中的 idp-eer），Workspace 以令牌交换调用 EER，EER 记录 bob 的批准、完成执行并结束事项（idp-telos-go ADR-0001 §5）。
+
+## 12. D18：运行等待确认时的入箱（2026-11-06）
+
+| # | 决策 | 理由 |
+|---|---|---|
+| D18 | **等待确认不是结束（修订 D11）**：idp-host 遇到需要所有者确认的工具调用时，运行停在 `AWAITING_INPUT`，事件流以一条 `outcome.type` 为 `interrupt` 的 `RUN_FINISHED` 结束（`interrupts[]` 带 `type: confirmation`、工具名与 `expiresAt`）。运行跟随不再把它当作结束：同一事项（`run:<runId>`）更新为"<动作标题> — awaiting confirmation"，摘要写明要调用的工具、Workspace 里暂时不能确认、请求何时过期（过期按拒绝处理），`dueAt` 设为最早的过期时间；随后立即以最后的事件 id（`after`）重连事件流，跟到真正的 `RUN_FINISHED` 或 `RUN_ERROR`，再按真实结果更新事项（finished / failed，`dueAt` 清空）。D11 的 10 分钟上限只计运行在跑的时间：遇到确认请求，跟随期限延到 max(原期限, 最晚过期时间 + 10 分钟)。事件流不带 id、无法续读时，事项记为 result unavailable | 原来的跟随把等待确认当成运行结束：事项显示 finished，之后再不更新，HOST 上的运行却在确认或过期之后才真正结束（2026-11-06 本机复现）。HOST 默认的确认超时（900 秒）比 D11 的 10 分钟长；HOST 最迟在过期时让运行继续，之后运行仍有 10 分钟。重连在中断后立即发生，而 HOST 只在建流时校验凭据（流上每 15 秒一次心跳，服务端没有写超时），所以交换或转发得到的令牌在等待期间过期不影响已经建立的流。不改契约：事项结构、动作与 `dueAt` 字段都是已有的；在 Workspace 里确认要等契约与平台目录的变更 |
+
+**实施结果（2026-11-06，WSL 实测）**
+
+- `internal/runs`：`read` 记下 SSE 的 `id`，可从 `after` 续读，并解析 `RUN_FINISHED` 的 `outcome`（对象 `{"type":"interrupt","interrupts":[…]}`，也认裸字符串 `"interrupt"`）；`Follow` 改为循环：遇到中断就放"awaiting confirmation"事项并重连，直到运行真正结束；最后一段助手文本跨重连保留。`Follower.Store` 改为只含 `PutItem` 的接口，`*postgres.Store` 满足它，调用方不变。
+- 本机复现环境（不在仓库内）：Workspace（static 凭据）、idp-host、idp-mcp 的注册服务与网关、测试替身上游，agent 对 `minimal__echo` 要求确认。修复前后对比：
+  - 等到确认过期：修复前，暂停时事项就成了"finished｜The run finished without a text answer."，过期后不变；修复后，暂停时为"awaiting confirmation"（`dueAt` 为过期时间），过期后更新为"finished｜Result: error: the confirmation request expired"。
+  - 过了运行期限再确认（发布件 `runTimeoutSeconds` 30、`confirmationTimeoutSeconds` 120，所有者在第 35 秒确认）：修复前事项始终是 finished；修复后暂停时为"awaiting confirmation"，确认后更新为"failed｜RUN_TIMEOUT the run exceeded its time limit"。
+
+**验证**：Go 单元（runs 新增 5 项：中断解析；等待后正常结束；确认后以超时失败；到"过期时间 + 上限"而不是到上限才放弃；事件流没有 id 时不猜测）、集成（新增 run-awaiting-confirmation：真实 PostgreSQL，假 HOST 先给中断、再在续读的流上给结果，核对事项的标题、摘要、`dueAt`、续读的 `after` 与最终结果）、`make test`、`make test-integration`（PostgreSQL 17）全部通过；本机复现环境的两个场景如上。
+
+**局限（不标 PASS）**
+- 跟随仍在进程内：等待期间 Workspace 重启，事项会停在"awaiting confirmation"；等待中连接断开时不重连，直接记为 result unavailable（重连所需的令牌可能已经过期）。持久化跟随与令牌续期留待后续。
+- Workspace 里还不能确认；static 凭据下运行的所有者是 Workspace 的服务身份，成员本人在 HOST 上也确认不了（403），只能等过期。
+- 最终事项只反映运行的结局。idp-host 的期限问题——过了 `runTimeoutSeconds` 再确认，工具照常执行，运行随后以 `RUN_TIMEOUT` 失败——在事项上只显示为 failed，看不出工具已经执行。
+- 每个等待中的运行占一个 goroutine 和一条到 HOST 的长连接，最长为确认超时加 10 分钟（HOST 允许确认超时到 86400 秒）。
+- `outcome` 与 `interrupts` 的形状来自 idp-host 的实现与 AG-UI，不在 `idp.telos.host` 契约里，消费方契约测试钉不住；中断里的 `expiresAt` 精确到秒，`dueAt` 可能比 HOST 记录的过期时间早不到一秒。
+- 没有跑 `make test-web` 与浏览器冒烟：这次没有改界面，复现环境用的是不带网页壳的镜像。

@@ -85,6 +85,7 @@ type recorder struct {
 	answer  string
 	srv     *httptest.Server
 	replies func(r recorded) (int, string)
+	stream  func(w http.ResponseWriter, r *http.Request) bool // answers instead (outside the lock) when it returns true
 }
 
 type recorded struct {
@@ -101,11 +102,14 @@ func newRecorder(t *testing.T, status int, answer string) *recorder {
 		_ = json.Unmarshal(raw, &x.Body)
 		rec.mu.Lock()
 		rec.got = append(rec.got, x)
-		status, answer := rec.status, rec.answer
+		status, answer, stream := rec.status, rec.answer, rec.stream
 		if rec.replies != nil {
 			status, answer = rec.replies(x)
 		}
 		rec.mu.Unlock()
+		if stream != nil && stream(w, r) {
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = io.WriteString(w, answer)
@@ -575,6 +579,96 @@ func TestWorkspaceEndToEnd(t *testing.T) {
 		}
 		if all := e.must(200, "GET", "/api/v1/workspaces/us-ops/invocations", "alice", nil)["invocations"].([]any); len(all) != 4 {
 			t.Fatalf("all: %v", all)
+		}
+	})
+
+	t.Run("run-awaiting-confirmation", func(t *testing.T) {
+		// D18: idp-host ends the event stream with RUN_FINISHED {outcome: interrupt} when a tool call
+		// waits for the owner's confirmation. The item says so, with the request's expiry; the follower
+		// resumes after the last event and puts the real result once the run goes on and ends.
+		expires := time.Now().Add(15 * time.Minute).UTC().Truncate(time.Second)
+		gate := make(chan struct{})
+		var once sync.Once
+		release := func() { once.Do(func() { close(gate) }) }
+		defer release()
+		var mu sync.Mutex
+		var afters []string
+		e.host.mu.Lock()
+		e.host.stream = func(w http.ResponseWriter, r *http.Request) bool {
+			if !strings.HasSuffix(r.URL.Path, "/events") {
+				return false
+			}
+			after := r.URL.Query().Get("after")
+			mu.Lock()
+			afters = append(afters, after)
+			mu.Unlock()
+			w.Header().Set("Content-Type", "text/event-stream")
+			if after == "" {
+				fmt.Fprintf(w, "id: 1\ndata: {\"type\":\"RUN_STARTED\"}\n\nid: 2\ndata: {\"type\":\"CUSTOM\",\"name\":\"idp.host/confirmation.required\"}\n\n"+
+					"id: 3\ndata: {\"type\":\"RUN_FINISHED\",\"outcome\":{\"type\":\"interrupt\",\"interrupts\":[{\"type\":\"confirmation\",\"toolCallId\":\"call_1\",\"tool\":\"minimal__echo\",\"arguments\":{\"text\":\"hi\"},\"expiresAt\":%q}]}}\n\n",
+					expires.Format(time.RFC3339))
+				return true
+			}
+			w.(http.Flusher).Flush()
+			select {
+			case <-gate:
+			case <-r.Context().Done():
+				return true
+			}
+			_, _ = io.WriteString(w, "id: 4\ndata: {\"type\":\"CUSTOM\",\"name\":\"idp.host/confirmation.decided\"}\n\nid: 5\ndata: {\"type\":\"RUN_STARTED\"}\n\n"+
+				"id: 6\ndata: {\"type\":\"TOOL_CALL_RESULT\",\"toolCallId\":\"call_1\",\"content\":\"hi\"}\n\nid: 7\ndata: {\"type\":\"TEXT_MESSAGE_START\",\"messageId\":\"m2\"}\n\n"+
+				"id: 8\ndata: {\"type\":\"TEXT_MESSAGE_CONTENT\",\"messageId\":\"m2\",\"delta\":\"Result: hi\"}\n\nid: 9\ndata: {\"type\":\"TEXT_MESSAGE_END\",\"messageId\":\"m2\"}\n\n"+
+				"id: 10\ndata: {\"type\":\"RUN_FINISHED\",\"outcome\":{\"type\":\"success\"}}\n\n")
+			return true
+		}
+		e.host.mu.Unlock()
+		defer func() {
+			e.host.mu.Lock()
+			e.host.stream = nil
+			e.host.mu.Unlock()
+		}()
+		st, out, _ := e.callH("POST", "/v1/workspaces/us-ops/actions/invoke", "bob", map[string]any{"app": "orders", "action": "order.review", "input": map[string]any{"message": "Please echo hi."}})
+		if st != 201 {
+			t.Fatalf("%d %v", st, out)
+		}
+		runID := out["result"].(map[string]any)["id"].(string)
+		item := func(suffix string) map[string]any {
+			for i := 0; i < 250; i++ {
+				for _, it := range e.must(200, "GET", "/v1/workspaces/us-ops/inbox?kind=run", "bob", nil)["items"].([]any) {
+					if x := it.(map[string]any); x["externalRef"] == "run:"+runID && strings.HasSuffix(x["title"].(string), suffix) {
+						return x
+					}
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			return nil
+		}
+		waiting := item("awaiting confirmation")
+		if waiting == nil || waiting["status"] != "open" || len(waiting["actions"].([]any)) != 0 {
+			t.Fatalf("awaiting: %v", waiting)
+		}
+		summary := waiting["summary"].(string)
+		if !strings.Contains(summary, "minimal__echo") || !strings.Contains(summary, "cannot be confirmed in the Workspace") || !strings.Contains(summary, expires.Format("2006-01-02 15:04:05")+" UTC") {
+			t.Fatalf("awaiting summary: %s", summary)
+		}
+		if due, err := time.Parse(time.RFC3339, fmt.Sprint(waiting["dueAt"])); err != nil || !due.Equal(expires) {
+			t.Fatalf("dueAt %v (%v), want %s", waiting["dueAt"], err, expires)
+		}
+		// the follower is back on the stream, after the interruption, while the run waits
+		var got []string
+		for i := 0; i < 250 && len(got) < 2; i++ {
+			time.Sleep(10 * time.Millisecond)
+			mu.Lock()
+			got = append([]string(nil), afters...)
+			mu.Unlock()
+		}
+		if len(got) != 2 || got[0] != "" || got[1] != "3" {
+			t.Fatalf("event requests after: %v", got)
+		}
+		release()
+		final := item("finished")
+		if final == nil || final["summary"] != "Result: hi" || final["dueAt"] != nil || final["version"].(float64) <= waiting["version"].(float64) {
+			t.Fatalf("final: %v", final)
 		}
 	})
 
