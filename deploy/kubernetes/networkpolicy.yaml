@@ -31,7 +31,7 @@ spec:
 ---
 # workspace: ingress on the API port from the ingress controller (the shell and members) and from
 # idp-eer (the inbox producer, EER ADR-038), metrics from the monitoring namespace; egress to
-# PostgreSQL, the IdP (JWKS, token exchange), idp-host (runs), idp-eer (approval decisions) and the
+# PostgreSQL, the IdP (JWKS, token exchange), idp-host (runs), idp-cmi (a member's memory), idp-eer (approval decisions) and the
 # apps' webhook backends.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -75,6 +75,12 @@ spec:
               kubernetes.io/metadata.name: idp-host
       ports:
         - {protocol: TCP, port: 8450}
+    - to:   # idp-cmi: a member's own memory ("my memory", D21; the member's token exchanged for the CMI audience)
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: idp-cmi
+      ports:
+        - {protocol: TCP, port: 8550}
     - to:
         - namespaceSelector:
             matchLabels:
