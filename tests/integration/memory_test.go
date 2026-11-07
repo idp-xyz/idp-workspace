@@ -159,12 +159,10 @@ func TestMyMemory(t *testing.T) {
 		if st != 404 || code(out) != "NOT_FOUND" || strings.Contains(fmt.Sprint(out), "secret") {
 			t.Fatalf("%d %v", st, out)
 		}
-		calls := cmi.revokeCalls()
-		if len(calls) != before+1 { // asked once, never retried
-			t.Fatalf("%d calls", len(calls)-before)
-		}
-		if last := calls[len(calls)-1]; last.Auth != "Bearer exchanged:bob" {
-			t.Fatalf("%+v", last)
+		// the id is not in bob's own list, so the Workspace never asks the CMI to revoke it (a CMI administrator could
+		// otherwise erase somebody else's record through this endpoint: the CMI lets an administrator revoke anything)
+		if calls := cmi.revokeCalls(); len(calls) != before {
+			t.Fatalf("a revoke was sent for a record that is not the member's: %d calls", len(calls)-before)
 		}
 		if got := cmi.records["carol"]; len(got) != 1 {
 			t.Fatalf("carol's record is gone: %v", got)

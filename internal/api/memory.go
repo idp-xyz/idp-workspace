@@ -62,6 +62,20 @@ func (a *API) memoryDeleteOne(r *http.Request, p authorization.Principal) (int, 
 	if !memoryID(id) {
 		return 0, nil, transport.Fail(http.StatusUnprocessableEntity, "INVALID", "the memory id is not a UUID")
 	}
+	// Only what idp-cmi shows THIS member as theirs: a person who also holds a CMI administrator role could otherwise
+	// erase somebody else's record by id through this endpoint (the CMI lets an administrator revoke anything). The
+	// member's own list is the authority for what "my memory" is.
+	mine, f := dispatch.ListMemory(r.Context(), ds, p)
+	if f != nil {
+		return 0, nil, memoryProblem(f)
+	}
+	owned := false
+	for _, m := range mine {
+		owned = owned || m.ID == id
+	}
+	if !owned {
+		return 0, nil, transport.Fail(http.StatusNotFound, "NOT_FOUND", "no such memory")
+	}
 	n, f := dispatch.RevokeMemory(r.Context(), ds, p, id)
 	if f != nil {
 		return 0, nil, memoryProblem(f)
