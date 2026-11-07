@@ -23,6 +23,9 @@ type File struct {
 type Targets struct {
 	Host *Downstream `yaml:"host"`
 	EER  *EER        `yaml:"eer"`
+	// CMI is idp-cmi, read and revoked as the member for "my memory" (ADR-0001 D21); absent = the
+	// memory endpoints answer 404 NOT_CONFIGURED.
+	CMI *Downstream `yaml:"cmi"`
 }
 
 // Downstream is one system's endpoint and how the workspace authenticates to it.
@@ -83,6 +86,11 @@ func Load(path string) (*File, error) {
 	}
 	if d := f.Targets.Host; d != nil {
 		if err := d.check("targets.host"); err != nil {
+			return nil, err
+		}
+	}
+	if d := f.Targets.CMI; d != nil {
+		if err := d.check("targets.cmi"); err != nil {
 			return nil, err
 		}
 	}

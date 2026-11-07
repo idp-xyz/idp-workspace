@@ -46,3 +46,6 @@ th, td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; ver
 .signin { max-width: 520px; margin: 12vh auto; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 24px; }
 .signin form { display: grid; gap: 10px; }
 .signin textarea { font: 12px ui-monospace, monospace; }
+.memory { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; max-width: 900px; }
+.memory li { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; }
+.memory .text { margin: 0 0 6px; white-space: pre-wrap; overflow-wrap: anywhere; }

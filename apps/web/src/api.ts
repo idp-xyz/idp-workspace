@@ -1,6 +1,6 @@
 // The shell's client of the workspace API (same origin). The bearer token lives in sessionStorage
 // for the tab only; it is never given to an app frame (ADR-0001 D5).
-import type { AuditEvent, InboxItem, InstalledApp, InstallationRow, Invocation, Me, Member, Release, Workspace, WorkContext } from './types.ts';
+import type { AuditEvent, InboxItem, InstalledApp, InstallationRow, Invocation, MemoryItem, Me, Member, Release, Workspace, WorkContext } from './types.ts';
 import { sseParser } from './sse.ts';
 
 export class ApiError extends Error {
@@ -46,6 +46,11 @@ export class Api {
     }
     return json as T;
   }
+
+  /** the member's own conversation memory in idp-cmi; ApiError 404 NOT_CONFIGURED when the workspace has none (ADR-0001 D21) */
+  memory() { return this.request<{ memories: MemoryItem[] }>('GET', '/v1/me/memory').then((r) => r.memories); }
+  deleteMemory(id: string) { return this.request<{ revoked: number }>('DELETE', `/v1/me/memory/${encodeURIComponent(id)}`); }
+  deleteAllMemory() { return this.request<{ revoked: number }>('DELETE', '/v1/me/memory'); }
 
   me() { return this.request<Me>('GET', '/v1/me'); }
 

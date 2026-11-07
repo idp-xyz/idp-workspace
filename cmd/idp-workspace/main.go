@@ -188,6 +188,12 @@ func serve(log *slog.Logger) error {
 			return fmt.Errorf("targets.host: %w", err)
 		}
 	}
+	var cmi *dispatch.Downstream
+	if c := cfg.Targets.CMI; c != nil { // ADR-0001 D21
+		if cmi, err = downstream(c); err != nil {
+			return fmt.Errorf("targets.cmi: %w", err)
+		}
+	}
 	if e := cfg.Targets.EER; e != nil {
 		if d.EER, err = downstream(&e.Downstream); err != nil {
 			return fmt.Errorf("targets.eer: %w", err)
@@ -220,7 +226,7 @@ func serve(log *slog.Logger) error {
 	if ms := observability.ServeMetrics(env("IDP_METRICS_LISTEN", ""), metrics, log); ms != nil {
 		defer ms.Close()
 	}
-	a := &api.API{Store: store, Auth: verifier, Dispatcher: d, Log: log, Metrics: metrics, Version: version, DevMode: verifier.Dev(), WebDir: env("IDP_WORKSPACE_WEB_DIR", "")}
+	a := &api.API{Store: store, Auth: verifier, Dispatcher: d, CMI: cmi, Log: log, Metrics: metrics, Version: version, DevMode: verifier.Dev(), WebDir: env("IDP_WORKSPACE_WEB_DIR", "")}
 	if id := env("IDP_WORKSPACE_OIDC_CLIENT_ID", ""); id != "" { // ADR-0001 D14
 		a.OIDC = &api.ShellOIDC{Issuer: prof.Issuer, ClientID: id, Scope: env("IDP_WORKSPACE_OIDC_SCOPE", "openid")}
 	}
@@ -257,7 +263,7 @@ func serve(log *slog.Logger) error {
 			errc <- srv.ListenAndServe()
 		}
 	}()
-	log.Info("idp-workspace listening", "addr", srv.Addr, "devMode", dev, "tls", srv.TLSConfig != nil, "host", d.Host != nil, "eer", d.EER != nil, "webhooks", d.WebhookSecret != nil, "web", a.WebDir != "", "oidc", a.OIDC != nil, "appTokens", a.AppTokens != nil)
+	log.Info("idp-workspace listening", "addr", srv.Addr, "devMode", dev, "tls", srv.TLSConfig != nil, "host", d.Host != nil, "eer", d.EER != nil, "cmi", cmi != nil, "webhooks", d.WebhookSecret != nil, "web", a.WebDir != "", "oidc", a.OIDC != nil, "appTokens", a.AppTokens != nil)
 	select {
 	case err := <-errc:
 		return err

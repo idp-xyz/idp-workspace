@@ -43,6 +43,8 @@ type API struct {
 	Store      *postgres.Store
 	Auth       Verifier
 	Dispatcher *dispatch.Dispatcher
+	// CMI is idp-cmi as the member's own memory store (D21); nil = "my memory" is not configured.
+	CMI *dispatch.Downstream
 	// Runs relays the results of host.run actions into the inbox (D11); nil = not followed.
 	Runs *runs.Follower
 	// WebDir holds the built web shell (D9); "" = the API only.
@@ -396,6 +398,9 @@ func (a *API) Handler() http.Handler {
 		}
 		transport.WriteJSON(w, 200, map[string]any{"subject": p.Subject, "tenant": p.Tenant, "roles": roles})
 	})
+	mux.Handle("GET /v1/me/memory", a.role(a.memoryList, member))
+	mux.Handle("DELETE /v1/me/memory/{id}", a.role(a.memoryDeleteOne, member))
+	mux.Handle("DELETE /v1/me/memory", a.role(a.memoryDeleteAll, member))
 	mux.Handle("GET /v1/workspaces", a.role(func(r *http.Request, p authorization.Principal) (int, any, error) {
 		out, err := a.Store.ListWorkspaces(r.Context(), p.Tenant, p.Subject, p.Has(authorization.RoleAdmin))
 		return 200, map[string]any{"workspaces": out}, err

@@ -162,3 +162,16 @@
 - D20：`bridgeHandlers.ts` 的 `inbox.list` 并行读取收件箱与成员的调用记录（`GET /v1/workspaces/{ws}/invocations`），只给本应用以 `host.run` 发起的运行的 run 事项附上 `externalRef` 与 `summary`；读调用记录失败时按"没有自己的运行"处理。
 - 前端单元：bridge 13 项、web 22 项（新增发起入口 4 项、D20 1 项）；`BROWSER=1 bash deploy/e2e.sh` 的冒烟从"发起"提交 Demo 的 Ping，壳显示服务端的 `TARGET_UNAVAILABLE`。
 - 平台 kind（idp-telos-go `MODEL=live` 的 `tests/kind/full.sh` 与浏览器）：bob 从"发起"问订单助手，回答（本机模型、引用 CMI 中的规定）约 2 秒后进收件箱；在平台的"助手"应用页（`idp.bridge/v1` 手写客户端）中文提问得到引用规定的回答、让代码助手算 2 的 100 次方得到沙箱的输出——应用页只读到它自己发起的运行的内容。
+
+## 15. 我的记忆（2026-11-06）
+
+| # | 决策 | 理由 |
+|---|---|---|
+| D21 | **成员查看并删除助手记下的对话记忆**：配置新增可选的 `targets.cmi`（形状与校验同 `targets.host`：`endpoint`、`auth: forward\|static\|exchange`、`exchange{tokenUrl, clientId, clientSecretFile, audience}`）。`GET /v1/me/memory` 读 idp-cmi 的 `GET /v1/memory/records?limit=100`（默认范围即调用者本人），返回 `{memories:[{id, content, createdAt, validUntil, source, ref, tags}]}`，新的在前，内容原样；`DELETE /v1/me/memory/{id}` 调 `POST /v1/memory/revoke {recordId, reason}`，返回 `{revoked:1}`；`DELETE /v1/me/memory` 先列出（100 条）再逐条撤销，返回 `{revoked:N}`。记忆属于人而不是工作空间，所以路径不在 `/v1/workspaces/{ws}` 之下，要求 `ws-member`。始终用**成员本人的令牌**（`exchange` 时换成 CMI 受众的令牌）调用 CMI，绝不用服务凭据，所以"哪些是他的"完全由 CMI 判定：别人的 id 只会得到 CMI 的 404，Workspace 不重试、不泄露。`id` 必须是 UUID，否则 422。CMI 的 404、403 原样以 404 NOT_FOUND、403 FORBIDDEN 透传；其余 4xx 为 502 `TARGET_REJECTED`，5xx、超时、交换失败为 502 `TARGET_UNAVAILABLE`（与 D4 的分发一致）。每次删除写审计 `memory.delete`（资源为记忆 id，"全部"时为空；详情只有 `count`，从不含内容）。未配置 `targets.cmi` 时三个端点答 404 `NOT_CONFIGURED`，壳据此隐藏"记忆"页 | 助手（idp-host）会把对话记进 CMI；成员应当看得见、删得掉。由 CMI 判定归属，Workspace 就不会成为越权删除的入口；用成员自己的令牌，则删除在 CMI 的审计里也是成员本人所为 |
+
+**界面**：导航里的"记忆"（仅当 `GET /v1/me/memory` 不是 404 NOT_CONFIGURED 时显示）列出记忆：内容超过 300 字符时截断并可"显示更多"，显示记录日期、到期日、来自哪次运行；每条有"删除"，另有"删除全部"（走壳已有的确认对话框）；没有记忆时显示"还没有记忆。和助手聊几句，它会记住。"；隐私说明不写死天数。
+
+**依赖**：idp-cmi 允许 `cmi-reader` 撤销自己范围内的记录（idp-cmi 的变更，不在本仓库）；在那之前，删除会得到 CMI 的 403 并原样透传。
+
+**验证**：Go 单元（配置校验：新增 `targets.cmi` 的 6 种非法与 3 种合法写法）；集成（真实 PostgreSQL，假 CMI 与假令牌端点：列出、删一条、删全部的路径、`Authorization` 为交换后的令牌而非成员自己的令牌、撤销请求体；别的成员猜 id 得 404 且只请求一次、对方记录不变、不写审计；CMI 不可达与交换被拒为 502；未配置为 404 NOT_CONFIGURED；审计不含内容）；前端单元（列出与截断、删一条后刷新、删全部先确认、空状态、失败提示、未配置时隐藏）。
+

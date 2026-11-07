@@ -290,9 +290,15 @@ func Verify(secret []byte, header string, body []byte, now time.Time, tolerance 
 	return nil
 }
 
-// call sends one JSON request and decodes a 2xx answer into out. Downstream errors keep the
-// downstream's code when it gives one ({"error":{"code"}} or a problem's "code").
+// call sends one JSON request to a downstream on behalf of p (see Downstream.Do).
 func (d *Dispatcher) call(ctx context.Context, ds *Downstream, p authorization.Principal, method, path, idempotencyKey string, body, out any) (int, *Failure) {
+	return ds.Do(ctx, p, method, path, idempotencyKey, body, out)
+}
+
+// Do sends one JSON request (no body when body is nil) with the credential this downstream uses for
+// p and decodes a 2xx answer into out. Downstream errors keep the downstream's code when it gives
+// one ({"error":{"code"}} or a problem's "code").
+func (ds *Downstream) Do(ctx context.Context, p authorization.Principal, method, path, idempotencyKey string, body, out any) (int, *Failure) {
 	token, err := ds.bearer(p)
 	if err != nil {
 		return 0, failure("TARGET_UNAVAILABLE", 0, "%v", err)
@@ -303,12 +309,18 @@ func (d *Dispatcher) call(ctx context.Context, ds *Downstream, p authorization.P
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	raw, _ := json.Marshal(body)
-	req, err := http.NewRequestWithContext(cctx, method, strings.TrimRight(ds.Endpoint, "/")+path, bytes.NewReader(raw))
+	var rd io.Reader
+	if body != nil {
+		raw, _ := json.Marshal(body)
+		rd = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequestWithContext(cctx, method, strings.TrimRight(ds.Endpoint, "/")+path, rd)
 	if err != nil {
 		return 0, failure("TARGET_UNAVAILABLE", 0, "%v", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	if idempotencyKey != "" {
 		req.Header.Set("Idempotency-Key", idempotencyKey)

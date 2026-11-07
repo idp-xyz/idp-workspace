@@ -42,6 +42,12 @@ webhooks: {secretFile: "`+secret+`"}
 		`targets: {host: {endpoint: "https://x", auth: exchange}}`,
 		`targets: {host: {endpoint: "https://x", auth: exchange, exchange: {tokenUrl: "https://idp/token", clientId: "c"}}}`,
 		`webhooks: {secretFile: "` + write(t, "short", "abc") + `"}`,
+		`targets: {cmi: {endpoint: "ftp://x"}}`,
+		`targets: {cmi: {endpoint: "https://x", auth: magic}}`,
+		`targets: {cmi: {endpoint: "https://x", auth: static}}`,
+		`targets: {cmi: {endpoint: "https://x", auth: exchange}}`,
+		`targets: {cmi: {endpoint: "https://x", auth: exchange, exchange: {tokenUrl: "https://idp/token", clientId: "c", clientSecretFile: "/s"}}}`,
+		`targets: {cmi: {auth: forward}}`,
 		`unknown: 1`,
 	} {
 		if _, err := Load(write(t, "bad.yaml", bad)); err == nil {
@@ -50,5 +56,21 @@ webhooks: {secretFile: "`+secret+`"}
 	}
 	if f, err := Load(""); err != nil || f.Targets.Host != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLoadCMI(t *testing.T) {
+	f, err := Load(write(t, "c.yaml", `
+targets:
+  cmi: {endpoint: "https://cmi:8443", auth: exchange, exchange: {tokenUrl: "https://idp/token", clientId: "idp-workspace", clientSecretFile: "/s", audience: "idp-cmi"}}
+`))
+	if err != nil || f.Targets.CMI == nil || f.Targets.CMI.Exchange.Audience != "idp-cmi" {
+		t.Fatalf("%+v %v", f, err)
+	}
+	if f, err := Load(write(t, "d.yaml", `targets: {cmi: {endpoint: "https://cmi"}}`)); err != nil || f.Targets.CMI.Auth != "forward" {
+		t.Fatalf("%+v %v", f, err)
+	}
+	if f, err := Load(write(t, "e.yaml", `targets: {host: {endpoint: "https://h"}}`)); err != nil || f.Targets.CMI != nil {
+		t.Fatalf("%+v %v", f, err)
 	}
 }

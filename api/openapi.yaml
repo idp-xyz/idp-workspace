@@ -74,6 +74,21 @@ paths:
 
   /v1/me:
     get: {summary: 'The caller as the token states it: {subject, tenant, roles}. A hint for navigation; the server decides every call', responses: {'200': {description: ok}}}
+  /v1/me/memory:
+    get:
+      summary: 'The conversation memory idp-host stored about the caller in idp-cmi (D21), newest first, content as stored; the CMI is called with the caller''s own (exchanged) token. 404 NOT_CONFIGURED without targets.cmi; 502 TARGET_REJECTED | TARGET_UNAVAILABLE. ws-member'
+      responses:
+        '200': {description: '{memories: [{id, content, createdAt, validUntil, source, ref, tags}]}', content: {application/json: {schema: {type: object, properties: {memories: {type: array, items: {type: object, required: [id, content, createdAt, tags], properties: {id: {type: string}, content: {type: string}, createdAt: {type: string, format: date-time}, validUntil: {type: string, format: date-time}, source: {type: string}, ref: {type: string}, tags: {type: array, items: {type: string}}}}}}}}}}
+        '404': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+    delete:
+      summary: 'Delete all of the caller''s memory: lists (limit 100) and revokes each; audit memory.delete with the count (never the content). ws-member'
+      responses: {'200': {description: '{revoked: N}'}, '404': {$ref: '#/components/responses/Error'}, '502': {$ref: '#/components/responses/Error'}}
+  /v1/me/memory/{id}:
+    parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+    delete:
+      summary: 'Delete one memory of the caller (D21). idp-cmi decides whether it is theirs: its 404 and 403 pass through (NOT_FOUND, FORBIDDEN); no retry. Audit memory.delete with the id. ws-member'
+      responses: {'200': {description: '{revoked: 1}'}, '403': {$ref: '#/components/responses/Error'}, '404': {$ref: '#/components/responses/Error'}, '422': {$ref: '#/components/responses/Error'}, '502': {$ref: '#/components/responses/Error'}}
   /v1/workspaces:
     get: {summary: 'The workspaces the caller belongs to (administrators: all). ws-member', responses: {'200': {description: '{workspaces}'}}}
   /v1/workspaces/{ws}:
