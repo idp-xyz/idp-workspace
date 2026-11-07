@@ -54,6 +54,8 @@ describe('shellHandlers', () => {
     await expect(h.setContext!({ entities: 'order:1' })).rejects.toBeInstanceOf(BridgeError);
     expect(await h.invokeAction!({ action: 'order.hold', input: { orderId: '1001' } })).toEqual({ invocationId: 'inv-1', status: 'succeeded', result: { httpStatus: 200 } });
     expect(calls.at(-1)).toEqual(['invoke', { app: 'orders', action: 'order.hold', input: { orderId: '1001' } }]);
+    await h.invokeAction!({ action: 'order.hold', input: { orderId: '1001' }, threadId: 'thr_chat_1' }); // an app that keeps a conversation names its thread
+    expect(calls.at(-1)).toEqual(['invoke', { app: 'orders', action: 'order.hold', input: { orderId: '1001' }, threadId: 'thr_chat_1' }]);
     await expect(h.invokeAction!({ action: 'order.hold', input: { orderId: 'x' } })).rejects.toMatchObject({ code: 'INVALID_INPUT' });
     await expect(h.invokeAction!({ action: 'order.delete' })).rejects.toMatchObject({ code: 'ACTION_NOT_FOUND' });
     const list = await h.listInbox!({}) as Array<Record<string, unknown>>;

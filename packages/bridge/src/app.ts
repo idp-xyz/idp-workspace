@@ -34,7 +34,7 @@ export interface AppClient {
   request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>;
   getContext<T = unknown>(): Promise<T>;
   setContext<T = unknown>(context: Record<string, unknown>): Promise<T>;
-  invokeAction<T = unknown>(action: string, input: Record<string, unknown>, itemId?: string): Promise<T>;
+  invokeAction<T = unknown>(action: string, input: Record<string, unknown>, itemId?: string, threadId?: string): Promise<T>;
   listInbox<T = unknown>(query?: Record<string, unknown>): Promise<T>;
   notify(message: string, level?: 'info' | 'success' | 'warning' | 'error'): Promise<void>;
   /** a token for the app's own backend (verify it there with verifyAppToken); never the user's token */
@@ -80,7 +80,7 @@ export function createAppClient(opts: AppClientOptions): AppClient {
     request,
     getContext: () => request('context.get'),
     setContext: (context) => request('context.set', context),
-    invokeAction: (action, input, itemId) => request('actions.invoke', { action, input, ...(itemId ? { itemId } : {}) }),
+    invokeAction: (action, input, itemId, threadId) => request('actions.invoke', { action, input, ...(itemId ? { itemId } : {}), ...(threadId ? { threadId } : {}) }),
     listInbox: (query) => request('inbox.list', query ?? {}),
     notify: async (message, level = 'info') => {
       await request('ui.notify', { message, level });

@@ -48,7 +48,7 @@ export function shellHandlers(api: Api, ws: Workspace, app: InstalledApp, ui: Sh
         throw new BridgeError('DECLINED', 'the member declined the action');
       }
       const input = (p.input ?? {}) as Record<string, unknown>;
-      const inv = await api.invoke(ws.name, { app: app.manifest.name, action: name, input, ...(typeof p.itemId === 'string' ? { itemId: p.itemId } : {}) }).catch(asBridgeError);
+      const inv = await api.invoke(ws.name, { app: app.manifest.name, action: name, input, ...(typeof p.itemId === 'string' ? { itemId: p.itemId } : {}), ...(typeof p.threadId === 'string' && p.threadId ? { threadId: p.threadId } : {}) }).catch(asBridgeError);
       return { invocationId: inv.invocationId, status: inv.status, result: inv.result };
     },
     // the headline of every item; D20: the outcome (summary) only of the runs this app started for the
