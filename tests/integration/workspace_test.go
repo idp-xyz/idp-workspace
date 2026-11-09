@@ -683,6 +683,123 @@ func TestWorkspaceEndToEnd(t *testing.T) {
 		}
 	})
 
+	t.Run("conversations-relay", func(t *testing.T) {
+		// D22: the shell follows a run, decides a tool call, cancels, and reads a conversation through the
+		// workspace, which relays to idp-host with the member's credential; only what the member started from
+		// this workspace is reachable, and what idp-host answers passes through with its own codes.
+		e.host.mu.Lock()
+		previous := e.host.replies
+		e.host.replies = func(r recorded) (int, string) {
+			switch {
+			case strings.HasSuffix(r.Path, "/events"):
+				return 200, "id: 1\ndata: {\"type\":\"RUN_STARTED\"}\n\nid: 2\ndata: {\"type\":\"TEXT_MESSAGE_CONTENT\",\"messageId\":\"m1\",\"delta\":\"Relayed.\"}\n\nid: 3\ndata: {\"type\":\"RUN_FINISHED\"}\n\n"
+			case strings.HasSuffix(r.Path, "/tool-calls"):
+				return 200, `{"toolCalls":[{"toolCallId":"call_9","tool":"minimal__echo","state":"PENDING_CONFIRMATION"}]}`
+			case strings.HasSuffix(r.Path, "/decide"):
+				return 200, `{"toolCallId":"call_9","state":"CONFIRMED","decidedBy":"bob"}`
+			case strings.HasSuffix(r.Path, "/cancel"):
+				return 200, `{"runId":"x","cancelRequested":true}`
+			case strings.HasSuffix(r.Path, "/messages"):
+				return 200, `{"messages":[{"id":"u1","role":"user","content":"Please echo hi."},{"id":"a1","role":"assistant","content":"hi"}]}`
+			case strings.Contains(r.Path, "/threads/"):
+				return 200, `{"runs":[{"runId":"x","status":"COMPLETED"}]}`
+			case strings.Contains(r.Path, "/v1/runs/") && !strings.Contains(r.Path, "/agents/"):
+				if strings.HasSuffix(r.Path, "/ws_missing") {
+					return 404, `{"error":{"code":"NOT_FOUND","message":"run not found"}}`
+				}
+				return 200, `{"runId":"x","threadId":"thr_1","status":"COMPLETED","contextPackageId":"pkg_1"}`
+			}
+			return 202, fmt.Sprintf(`{"runId":%q,"threadId":"thr_1","status":"QUEUED"}`, r.Body["runId"])
+		}
+		e.host.mu.Unlock()
+		st, out, _ := e.callH("POST", "/v1/workspaces/us-ops/actions/invoke", "bob", map[string]any{"app": "orders", "action": "order.review", "input": map[string]any{"message": "Relay this."}})
+		if st != 201 {
+			t.Fatalf("%d %v", st, out)
+		}
+		runID := out["result"].(map[string]any)["id"].(string)
+
+		// the conversation list is the workspace's own: bob's host.run invocations grouped by thread
+		convs := e.must(200, "GET", "/v1/workspaces/us-ops/conversations", "bob", nil)["conversations"].([]any)
+		if len(convs) == 0 {
+			t.Fatal("no conversations")
+		}
+		c := convs[0].(map[string]any)
+		if c["threadId"] != "thr_1" || c["app"] != "orders" || c["action"] != "order.review" || c["agent"] != "order-assistant" || c["lastRunId"] != runID || c["runs"].(float64) < 2 {
+			t.Fatalf("conversation: %v", c)
+		}
+		if n := len(e.must(200, "GET", "/v1/workspaces/us-ops/conversations", "carol", nil)["conversations"].([]any)); n != 0 {
+			t.Fatalf("carol sees %d of bob's conversations", n)
+		}
+		e.must(404, "GET", "/v1/workspaces/us-ops/conversations", "dan", nil)
+
+		// the run, relayed as idp-host answers it, with bob's own credential
+		run := e.must(200, "GET", "/v1/workspaces/us-ops/runs/"+runID, "bob", nil)
+		if run["status"] != "COMPLETED" || run["contextPackageId"] != "pkg_1" {
+			t.Fatalf("run: %v", run)
+		}
+		if saw := e.host.find(func(p string) bool { return p == "/v1/runs/"+runID }); saw.Auth != "Bearer "+e.tokens["bob"] {
+			t.Fatalf("idp-host saw %q", saw.Auth)
+		}
+		// what bob did not start is not there - for carol, and for a run idp-host does not know either
+		if out := e.must(404, "GET", "/v1/workspaces/us-ops/runs/"+runID, "carol", nil); code(out) != "NOT_FOUND" {
+			t.Fatalf("carol: %v", out)
+		}
+		e.must(404, "GET", "/v1/workspaces/us-ops/runs/ws_missing", "bob", nil)
+		e.must(404, "GET", "/v1/workspaces/us-ops/runs/"+url.PathEscape("../x"), "bob", nil)
+
+		// the event stream passes through as events; as JSON when not asked for a stream
+		req, _ := http.NewRequest("GET", e.api.URL+"/v1/workspaces/us-ops/runs/"+runID+"/events?after=0", nil)
+		req.Header.Set("Authorization", "Bearer "+e.tokens["bob"])
+		req.Header.Set("Accept", "text/event-stream")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stream, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") || !strings.Contains(string(stream), "id: 2\ndata: {\"type\":\"TEXT_MESSAGE_CONTENT\"") {
+			t.Fatalf("stream: %d %s %q", resp.StatusCode, resp.Header.Get("Content-Type"), stream)
+		}
+		if saw := e.host.find(func(p string) bool { return p == "/v1/runs/"+runID+"/events" }); saw.Auth != "Bearer "+e.tokens["bob"] {
+			t.Fatalf("idp-host saw %q for the stream", saw.Auth)
+		}
+
+		// tool calls, a decision, a cancellation: relayed for bob, refused when malformed
+		calls := e.must(200, "GET", "/v1/workspaces/us-ops/runs/"+runID+"/tool-calls", "bob", nil)["toolCalls"].([]any)
+		if len(calls) != 1 || calls[0].(map[string]any)["state"] != "PENDING_CONFIRMATION" {
+			t.Fatalf("tool calls: %v", calls)
+		}
+		decided := e.must(200, "POST", "/v1/workspaces/us-ops/runs/"+runID+"/tool-calls/call_9/decide", "bob", map[string]any{"decision": "confirm"})
+		if decided["state"] != "CONFIRMED" {
+			t.Fatalf("decided: %v", decided)
+		}
+		if saw := e.host.find(func(p string) bool { return strings.HasSuffix(p, "/decide") }); saw.Path != "/v1/runs/"+runID+"/tool-calls/call_9/decide" || saw.Body["decision"] != "confirm" || saw.Auth != "Bearer "+e.tokens["bob"] {
+			t.Fatalf("idp-host saw %v", saw)
+		}
+		if out := e.must(422, "POST", "/v1/workspaces/us-ops/runs/"+runID+"/tool-calls/call_9/decide", "bob", map[string]any{"decision": "maybe"}); code(out) != "INVALID" {
+			t.Fatalf("maybe: %v", out)
+		}
+		e.must(404, "POST", "/v1/workspaces/us-ops/runs/"+runID+"/tool-calls/call_9/decide", "carol", map[string]any{"decision": "confirm"})
+		if out := e.must(200, "POST", "/v1/workspaces/us-ops/runs/"+runID+"/cancel", "bob", nil); out["cancelRequested"] != true {
+			t.Fatalf("cancel: %v", out)
+		}
+
+		// the conversation's messages and runs: bob's thread, nobody else's, nothing bob did not start
+		msgs := e.must(200, "GET", "/v1/workspaces/us-ops/threads/thr_1/messages", "bob", nil)["messages"].([]any)
+		if len(msgs) != 2 || msgs[0].(map[string]any)["role"] != "user" {
+			t.Fatalf("messages: %v", msgs)
+		}
+		if runs := e.must(200, "GET", "/v1/workspaces/us-ops/threads/thr_1/runs", "bob", nil)["runs"].([]any); len(runs) != 1 {
+			t.Fatalf("runs: %v", runs)
+		}
+		e.must(404, "GET", "/v1/workspaces/us-ops/threads/thr_1/messages", "carol", nil)
+		e.must(404, "GET", "/v1/workspaces/us-ops/threads/thr_other/messages", "bob", nil)
+
+		e.host.mu.Lock()
+		e.host.replies = previous
+		e.host.mu.Unlock()
+	})
+
 	t.Run("inbox-stream", func(t *testing.T) {
 		// D10: the stream sends what bob sees, then live changes; carol's stream does not get bob's items
 		api.StreamPoll = 50 * time.Millisecond

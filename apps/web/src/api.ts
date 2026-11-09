@@ -1,6 +1,7 @@
 // The shell's client of the workspace API (same origin). The bearer token lives in sessionStorage
 // for the tab only; it is never given to an app frame (ADR-0001 D5).
-import type { AuditEvent, InboxItem, InstalledApp, InstallationRow, Invocation, MemoryItem, Me, Member, Release, Workspace, WorkContext } from './types.ts';
+import type { AuditEvent, Conversation, InboxItem, InstalledApp, InstallationRow, Invocation, MemoryItem, Me, Member, Release, Workspace, WorkContext } from './types.ts';
+import type { AGUIEvent, HostMessage, HostRun, HostToolCall } from './agent/events.ts';
 import { sseParser } from './sse.ts';
 
 export class ApiError extends Error {
@@ -93,6 +94,50 @@ export class Api {
   /** invoke an action; a fresh idempotency key per user gesture makes a double click harmless. */
   invoke(ws: string, call: { app: string; action: string; input?: Record<string, unknown>; itemId?: string; threadId?: string }, key: string = crypto.randomUUID()): Promise<Invocation> {
     return this.request<Invocation>('POST', `/v1/workspaces/${encodeURIComponent(ws)}/actions/invoke`, call, { 'Idempotency-Key': key });
+  }
+
+  // ---- conversations with the agents (D22): the member's own runs and threads, relayed to idp-host ----
+  conversations(ws: string, limit = 50) {
+    return this.request<{ conversations: Conversation[] }>('GET', `/v1/workspaces/${encodeURIComponent(ws)}/conversations?limit=${limit}`).then((r) => r.conversations);
+  }
+  run(ws: string, runId: string) { return this.request<HostRun>('GET', `/v1/workspaces/${encodeURIComponent(ws)}/runs/${encodeURIComponent(runId)}`); }
+  runToolCalls(ws: string, runId: string) {
+    return this.request<{ toolCalls: HostToolCall[] }>('GET', `/v1/workspaces/${encodeURIComponent(ws)}/runs/${encodeURIComponent(runId)}/tool-calls`).then((r) => r.toolCalls);
+  }
+  decide(ws: string, runId: string, toolCallId: string, decision: 'confirm' | 'reject') {
+    return this.request<HostToolCall>('POST', `/v1/workspaces/${encodeURIComponent(ws)}/runs/${encodeURIComponent(runId)}/tool-calls/${encodeURIComponent(toolCallId)}/decide`, { decision });
+  }
+  cancelRun(ws: string, runId: string) { return this.request<HostRun>('POST', `/v1/workspaces/${encodeURIComponent(ws)}/runs/${encodeURIComponent(runId)}/cancel`); }
+  threadMessages(ws: string, threadId: string) {
+    return this.request<{ messages: HostMessage[] }>('GET', `/v1/workspaces/${encodeURIComponent(ws)}/threads/${encodeURIComponent(threadId)}/messages`).then((r) => r.messages);
+  }
+  threadRuns(ws: string, threadId: string) {
+    return this.request<{ runs: HostRun[] }>('GET', `/v1/workspaces/${encodeURIComponent(ws)}/threads/${encodeURIComponent(threadId)}/runs`).then((r) => r.runs);
+  }
+  /** follow a run's events once, from after the given event id: onEvent for each until idp-host closes
+   * the stream (the run ended or stopped for a decision) or the signal aborts. Returns the last event id. */
+  async runEvents(ws: string, runId: string, after: string, onEvent: (ev: AGUIEvent, id: string) => void, signal: AbortSignal): Promise<string> {
+    const res = await this.fetcher(`/v1/workspaces/${encodeURIComponent(ws)}/runs/${encodeURIComponent(runId)}/events${after ? `?after=${encodeURIComponent(after)}` : ''}`, {
+      headers: { Authorization: `Bearer ${this.token ?? ''}`, Accept: 'text/event-stream', ...(after ? { 'Last-Event-ID': after } : {}) }, signal,
+    });
+    if (!res.ok || !res.body) {
+      const text = await res.text().catch(() => '');
+      let err: { code?: string; message?: string } = {};
+      try { err = (JSON.parse(text) as { error?: typeof err }).error ?? {}; } catch { /* not a problem document */ }
+      throw new ApiError(res.status, err.code ?? `HTTP_${res.status}`, err.message ?? 'the run\'s events are not available');
+    }
+    const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+    const parse = sseParser();
+    let last = after;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      for (const ev of parse(value)) {
+        if (ev.id) last = ev.id;
+        try { onEvent(JSON.parse(ev.data) as AGUIEvent, ev.id); } catch { /* a line that is not an event */ }
+      }
+    }
+    return last;
   }
 
   /** stream the inbox: onItem for each change until the signal aborts; reconnects from the last id. */

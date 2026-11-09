@@ -70,15 +70,15 @@ describe('MemoryView', () => {
 });
 
 describe('App memory tab', () => {
-  const shell = (memory: Response) => {
+  const shell = (memory: Response, configured = true) => {
     const fetcher = (async (url: string) => {
       const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status });
       if (url === '/shell-config.json') return json({ devMode: true, version: 't' });
-      if (url === '/v1/me') return json({ subject: 'bob', tenant: 't', roles: ['ws-member'] });
+      if (url === '/v1/me') return json({ subject: 'bob', tenant: 't', roles: ['ws-member'], memory: configured });
       if (url === '/v1/me/memory') return memory.clone();
       if (url === '/v1/workspaces') return json({ workspaces: [{ workspaceId: 'w1', name: 'us-ops', displayName: 'US' }] });
       if (url.endsWith('/apps')) return json({ apps: [] });
-      if (url.endsWith('/inbox')) return json({ items: [] });
+      if (/\/inbox(\?|$)/.test(url)) return json({ items: [] });
       return new Promise<Response>(() => {});
     }) as unknown as typeof fetch;
     const store = new Map<string, string>([['idp-workspace.token', 'tok']]);
@@ -93,7 +93,7 @@ describe('App memory tab', () => {
   });
 
   it('hides the tab when memory is not configured', async () => {
-    render(<App api={shell(new Response(JSON.stringify({ error: { code: 'NOT_CONFIGURED', message: 'x' } }), { status: 404 }))} />);
+    render(<App api={shell(new Response(JSON.stringify({ error: { code: 'NOT_CONFIGURED', message: 'x' } }), { status: 404 }), false)} />);
     await waitFor(() => expect(screen.getByText('收件箱是空的。')).toBeTruthy());
     await new Promise((r) => setTimeout(r, 50));
     expect(screen.queryByText('记忆')).toBeNull();

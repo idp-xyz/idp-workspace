@@ -39,4 +39,29 @@ describe('Inbox', () => {
     render(<Inbox api={{} as Api} ws={{ workspaceId: 'w1', name: 'us-ops', displayName: 'US' }} items={[{ ...item, status: 'resolved' }, { ...item, itemId: 'i2', archivedAt: 'x' }]} apps={apps} confirm={async () => true} notify={() => {}} onChanged={() => {}} />);
     expect(screen.getByText('收件箱是空的。')).toBeTruthy();
   });
+
+  it('keeps the closed and the archived under their tabs, filters by kind and words, and opens a run\'s conversation', () => {
+    const run: InboxItem = { ...item, itemId: 'r1', kind: 'run', title: 'Ask the order assistant — finished', summary: 'Parcels **above 10000 USD** need approval.', actions: [],
+      ref: { system: 'host', kind: 'run', id: 'ws_42' }, producer: 'idp-workspace', externalRef: 'run:ws_42' };
+    const onOpenRun = vi.fn();
+    render(<Inbox api={{} as Api} ws={{ workspaceId: 'w1', name: 'us-ops', displayName: 'US' }} items={[item, run, { ...item, itemId: 'i3', status: 'resolved', resolution: { outcome: 'approved', by: 'bob', at: 'x' } }, { ...item, itemId: 'i4', archivedAt: 'x', title: 'Old one' }]}
+      apps={apps} confirm={async () => true} notify={() => {}} onChanged={() => {}} onOpenRun={onOpenRun} />);
+    // the run's title carries its state as a badge, its summary is Markdown
+    expect(screen.getByText('Ask the order assistant')).toBeTruthy();
+    expect(screen.getByText('已完成')).toBeTruthy();
+    expect(screen.getByText('above 10000 USD').tagName).toBe('STRONG');
+    fireEvent.click(screen.getByText('在对话中打开'));
+    expect(onOpenRun).toHaveBeenCalledWith('ws_42');
+    expect(screen.queryByText('Old one')).toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: /已归档/ }));
+    expect(screen.getByText('Old one')).toBeTruthy();
+    expect(screen.getByText('取消归档')).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: /全部/ }));
+    expect(screen.getByText(/已处理：approved/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('种类'), { target: { value: 'run' } });
+    expect(screen.queryByText('Approve the refund for order 1001')).toBeNull();
+    expect(screen.getByText('Ask the order assistant')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('搜索'), { target: { value: 'nothing like this' } });
+    expect(screen.getByText('没有符合条件的事项。')).toBeTruthy();
+  });
 });

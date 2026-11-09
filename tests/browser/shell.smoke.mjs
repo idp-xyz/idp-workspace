@@ -1,6 +1,7 @@
 // Browser smoke test of the web shell (ADR-0001 D5, D9, D10), run by deploy/e2e.sh with BROWSER=1:
 // a real Chromium signs in with a development token, sees the inbox, receives a live item from the
-// stream, opens a framed third-party app and checks what the app could and could not do through the
+// stream, starts an action from the shell's own form, talks to an agent when one is installed (D22),
+// opens a framed third-party app and checks what the app could and could not do through the
 // bridge. Uses the repository's playwright-core (a root devDependency) and its Chromium
 // (npx playwright-core install chromium), or PLAYWRIGHT_CORE / CHROMIUM when given.
 import { createRequire } from 'node:module';
@@ -14,7 +15,7 @@ try {
   const page = await browser.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(String(e)));
-  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text() + (m.location().url ? ' [' + m.location().url + ']' : '')); });
   await page.goto(WS + '/');
   await page.fill('#token', TOKEN);
   await page.click('button[type=submit]');
@@ -43,9 +44,29 @@ try {
   await page.waitForSelector('.toast >> text=Demo: hello from the app', { timeout: 5000 });
   const sandbox = await page.getAttribute('iframe.app-frame', 'sandbox');
   if (sandbox !== 'allow-scripts allow-forms allow-same-origin') fail('sandbox ' + sandbox);
+  // the conversation with an agent (D22), when one is installed (deploy/e2e.sh HOST=1 publishes orders):
+  // the question, the answer as it streams from idp-host, and the conversation kept in the list
+  let conversation = 'no agent installed';
+  if (await page.locator('nav >> text=对话').count()) {
+    await page.click('nav >> text=对话');
+    await page.waitForSelector('.composer textarea:not([disabled])', { timeout: 15000 });
+    await page.fill('.composer textarea', 'Why is order 1001 late?');
+    await page.click('.composer button[type=submit]');
+    await page.waitForSelector('.turn.user .bubble >> text=Why is order 1001 late?', { timeout: 10000 });
+    try {
+      await page.waitForSelector('.turn.assistant .text .md', { timeout: 60000 });
+    } catch {
+      fail('no answer in the conversation: ' + (await page.textContent('.transcript')).slice(0, 500));
+    }
+    await page.waitForFunction(() => !document.querySelector('.turn.assistant.status-running, .turn.assistant.status-queued'), null, { timeout: 60000 });
+    const answer = (await page.textContent('.turn.assistant .answer')).trim();
+    if (!answer) fail('the agent answered nothing');
+    await page.waitForSelector('.chat-list .chat-item-title >> text=Why is order 1001 late?', { timeout: 10000 });
+    conversation = answer.replace(/\s+/g, ' ').slice(0, 60);
+  }
   const unexpected = errors.filter((e) => !/TARGET_UNAVAILABLE|502|CAPABILITY_DENIED/.test(e));
   if (unexpected.length) fail('page errors: ' + unexpected.join(' | '));
-  console.log('browser: sign-in, inbox, live stream item, an action started from the shell, framed app through the bridge ok');
+  console.log(`browser: sign-in, inbox, live stream item, an action started from the shell, a conversation with an agent (${conversation}), framed app through the bridge ok`);
 
   // ---- the administrator does everything through the screens, no API calls ----
   const admin = await browser.newPage();

@@ -17,6 +17,8 @@ components:
     bearer: {type: http, scheme: bearer, bearerFormat: JWT, description: 'claims tenant_id and roles (configurable)'}
   parameters:
     ws: {name: ws, in: path, required: true, schema: {type: string}}
+    run: {name: run, in: path, required: true, schema: {type: string}, description: 'an idp-host run the caller started from this workspace'}
+    thread: {name: thread, in: path, required: true, schema: {type: string}, description: 'an idp-host thread the caller''s runs from this workspace named'}
   schemas:
     Workspace: {$ref: 'contracts/schema.json#/$defs/Workspace'}
     AppManifest: {$ref: 'contracts/schema.json#/$defs/AppManifest'}
@@ -132,6 +134,36 @@ paths:
   /v1/workspaces/{ws}/invocations:
     parameters: [{$ref: '#/components/parameters/ws'}]
     get: {summary: 'The caller''s invocations. ws-member', responses: {'200': {description: '{invocations}'}}}
+
+  # Conversations with the agents (D22): relayed to idp-host with the caller's own credential for it,
+  # and only for a run or a thread the caller started from this workspace (anything else is 404).
+  /v1/workspaces/{ws}/conversations:
+    parameters: [{$ref: '#/components/parameters/ws'}]
+    get: {summary: 'The caller''s conversations in this workspace: their succeeded host.run invocations grouped by the idp-host thread, newest first (?limit=, default 50). ws-member', responses: {'200': {description: '{conversations: [{threadId, app, action, agent, runs, firstAt, lastAt, lastRunId}]}'}}}
+  /v1/workspaces/{ws}/runs/{run}:
+    parameters: [{$ref: '#/components/parameters/ws'}, {$ref: '#/components/parameters/run'}]
+    get: {summary: 'The run, as idp-host answers it. ws-member', responses: {'200': {description: 'the idp-host run'}, '404': {$ref: '#/components/responses/Error'}, '502': {$ref: '#/components/responses/Error'}}}
+  /v1/workspaces/{ws}/runs/{run}/events:
+    parameters: [{$ref: '#/components/parameters/ws'}, {$ref: '#/components/parameters/run'}]
+    get: {summary: 'The run''s AG-UI events: text/event-stream when asked for one (live, resumed with Last-Event-ID or ?after=, until idp-host closes it at the run''s end or its interruption), otherwise {events} as JSON. ws-member', responses: {'200': {description: 'text/event-stream or {events}'}, '404': {$ref: '#/components/responses/Error'}, '502': {$ref: '#/components/responses/Error'}}}
+  /v1/workspaces/{ws}/runs/{run}/tool-calls:
+    parameters: [{$ref: '#/components/parameters/ws'}, {$ref: '#/components/parameters/run'}]
+    get: {summary: 'The run''s tool calls, as idp-host answers them. ws-member', responses: {'200': {description: '{toolCalls}'}, '404': {$ref: '#/components/responses/Error'}}}
+  /v1/workspaces/{ws}/runs/{run}/tool-calls/{call}/decide:
+    parameters: [{$ref: '#/components/parameters/ws'}, {$ref: '#/components/parameters/run'}, {name: call, in: path, required: true, schema: {type: string}}]
+    post:
+      summary: 'Confirm or reject a tool call that waits for the run''s owner (idp-host D7). ws-member'
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [decision], properties: {decision: {type: string, enum: [confirm, reject]}}}}}}
+      responses: {'200': {description: 'the decided tool call'}, '404': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}, '422': {$ref: '#/components/responses/Error'}}
+  /v1/workspaces/{ws}/runs/{run}/cancel:
+    parameters: [{$ref: '#/components/parameters/ws'}, {$ref: '#/components/parameters/run'}]
+    post: {summary: 'Ask idp-host to cancel the run. ws-member', responses: {'200': {description: 'the run'}, '404': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}}}
+  /v1/workspaces/{ws}/threads/{thread}/messages:
+    parameters: [{$ref: '#/components/parameters/ws'}, {$ref: '#/components/parameters/thread'}]
+    get: {summary: 'The conversation''s messages, as idp-host keeps them. ws-member', responses: {'200': {description: '{messages}'}, '404': {$ref: '#/components/responses/Error'}}}
+  /v1/workspaces/{ws}/threads/{thread}/runs:
+    parameters: [{$ref: '#/components/parameters/ws'}, {$ref: '#/components/parameters/thread'}]
+    get: {summary: 'The conversation''s runs, as idp-host keeps them. ws-member', responses: {'200': {description: '{runs}'}, '404': {$ref: '#/components/responses/Error'}}}
 
   /v1/workspaces/{ws}/apps/{app}/token:
     parameters: [{$ref: '#/components/parameters/ws'}, {name: app, in: path, required: true, schema: {type: string}}]

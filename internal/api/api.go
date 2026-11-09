@@ -396,7 +396,8 @@ func (a *API) Handler() http.Handler {
 		if roles == nil {
 			roles = []string{}
 		}
-		transport.WriteJSON(w, 200, map[string]any{"subject": p.Subject, "tenant": p.Tenant, "roles": roles})
+		// memory: the workspace has a CMI target, so the shell shows the "my memory" page (no probe request that would 404)
+		transport.WriteJSON(w, 200, map[string]any{"subject": p.Subject, "tenant": p.Tenant, "roles": roles, "memory": a.CMI != nil})
 	})
 	mux.Handle("GET /v1/me/memory", a.role(a.memoryList, member))
 	mux.Handle("DELETE /v1/me/memory/{id}", a.role(a.memoryDeleteOne, member))
@@ -525,6 +526,16 @@ func (a *API) Handler() http.Handler {
 	}, member))
 	mux.Handle("POST /v1/workspaces/{ws}/actions/invoke", a.role(a.invoke, member))
 	mux.HandleFunc("GET /v1/workspaces/{ws}/inbox/stream", a.inboxStream)
+
+	// ---- conversations with the agents (D22): the member's own runs and threads, relayed to idp-host ----
+	mux.Handle("GET /v1/workspaces/{ws}/conversations", a.role(a.conversations, member))
+	mux.Handle("GET /v1/workspaces/{ws}/runs/{run}", a.role(a.runGet, member))
+	mux.HandleFunc("GET /v1/workspaces/{ws}/runs/{run}/events", a.runEvents)
+	mux.Handle("GET /v1/workspaces/{ws}/runs/{run}/tool-calls", a.role(a.runToolCalls, member))
+	mux.Handle("POST /v1/workspaces/{ws}/runs/{run}/tool-calls/{call}/decide", a.role(a.runDecide, member))
+	mux.Handle("POST /v1/workspaces/{ws}/runs/{run}/cancel", a.role(a.runCancel, member))
+	mux.Handle("GET /v1/workspaces/{ws}/threads/{thread}/messages", a.role(a.threadMessages, member))
+	mux.Handle("GET /v1/workspaces/{ws}/threads/{thread}/runs", a.role(a.threadRuns, member))
 
 	// ---- producers (D3) ----
 	mux.Handle("POST /v1/workspaces/{ws}/inbox/items", a.role(func(r *http.Request, p authorization.Principal) (int, any, error) {

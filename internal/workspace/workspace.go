@@ -396,6 +396,20 @@ type Invocation struct {
 	CreatedAt   time.Time       `json:"createdAt"`
 }
 
+// Conversation is what the workspace itself knows of a member's conversation with an agent (D22): the
+// idp-host thread the member's host.run invocations from this workspace named, and when. The messages
+// are idp-host's and are read from it.
+type Conversation struct {
+	ThreadID  string    `json:"threadId"`
+	App       string    `json:"app"`
+	Action    string    `json:"action"`
+	Agent     string    `json:"agent"`
+	Runs      int       `json:"runs"`
+	FirstAt   time.Time `json:"firstAt"`
+	LastAt    time.Time `json:"lastAt"`
+	LastRunID string    `json:"lastRunId"`
+}
+
 // Problem is a stable error code with a safe message.
 type Problem struct {
 	Code    string `json:"code"`

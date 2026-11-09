@@ -4,9 +4,12 @@ import { OIDC } from './oidc.ts';
 import type { Tokens } from './oidc.ts';
 import { Admin } from './Admin.tsx';
 import { AppFrame } from './AppFrame.tsx';
+import { Conversations, chatAgents } from './Conversations.tsx';
 import { Inbox } from './Inbox.tsx';
 import { Launcher, launchable } from './Launcher.tsx';
 import { MemoryView } from './Memory.tsx';
+import { friendly } from './errors.ts';
+import { useTheme } from './theme.ts';
 import type { ShellUI } from './bridgeHandlers.ts';
 import type { InboxItem, InstalledApp, Me, Workspace } from './types.ts';
 
@@ -23,9 +26,12 @@ export function App(props: { api?: Api }) {
   const [ws, setWs] = useState<Workspace | null>(null);
   const [apps, setApps] = useState<InstalledApp[]>([]);
   const [items, setItems] = useState<InboxItem[]>([]);
-  // null until the probe answers; false when the workspace has no memory store (404 NOT_CONFIGURED)
+  // null until /v1/me answers; false when the workspace has no memory store (me.memory is false)
   const [memoryOn, setMemoryOn] = useState<boolean | null>(null);
   const [view, setView] = useState<string>('inbox');
+  // the conversation the member asked to open from the inbox (D22): its idp-host thread
+  const [openThread, setOpenThread] = useState<string | null>(null);
+  const [theme, setTheme] = useTheme();
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -34,7 +40,7 @@ export function App(props: { api?: Api }) {
     setToasts((t) => [...t, { id, message, level }]);
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 5000);
   }, []);
-  const ui: ShellUI = useMemo(() => ({ notify, confirm: async (q: string) => window.confirm(q), locale: navigator.language, theme: 'light' }), [notify]);
+  const ui: ShellUI = useMemo(() => ({ notify, confirm: async (q: string) => window.confirm(q), locale: navigator.language, theme: theme === 'dark' ? 'dark' : 'light' }), [notify, theme]);
 
   // sign-in with the identity provider (ADR-0001 D14): finish a redirect on /callback, then keep the
   // access token fresh with the refresh token until it no longer works
@@ -74,8 +80,7 @@ export function App(props: { api?: Api }) {
   };
   useEffect(() => {
     if (!token) { setMe(null); setMemoryOn(null); return; }
-    api.memory().then(() => setMemoryOn(true)).catch((e) => setMemoryOn(!(e instanceof ApiError && e.status === 404 && e.code === 'NOT_CONFIGURED')));
-    api.me().then(setMe).catch(() => {});
+    api.me().then((m) => { setMe(m); setMemoryOn(Boolean(m.memory)); }).catch(() => setMemoryOn(false));
     setError(null); // a new sign-in starts clean: errors of an earlier token are not this session's
     api.workspaces().then((list) => {
       setWorkspaces(list);
@@ -91,8 +96,8 @@ export function App(props: { api?: Api }) {
     setItems([]);
     setError(null);
     api.apps(ws.name).then(setApps).catch((e) => setError(String(e)));
-    // the stream replays what is open, then pushes changes (ADR-0001 D10)
-    api.inbox(ws.name).then(setItems).catch((e) => setError(String(e)));
+    // everything the member may see, archived included (the tabs sort it out); the stream pushes changes (ADR-0001 D10)
+    api.inbox(ws.name, { status: 'all', archived: 'true', limit: '300' }).then(setItems).catch((e) => setError(String(e)));
     api.stream(ws.name, (it) => setItems((cur) => [it, ...cur.filter((x) => x.itemId !== it.itemId)]), abort.signal).catch((e) => setError(String(e)));
     return () => abort.abort();
   }, [api, ws]);
@@ -100,6 +105,19 @@ export function App(props: { api?: Api }) {
   if (!token) return <SignIn devMode={devMode} oidc={oidc} error={error} onToken={(t) => { api.signIn(t); setToken(api.token); }} />;
   const open = items.filter((i) => i.status === 'open' && !i.archivedAt).length;
   const current = apps.find((a) => a.manifest.name === view);
+  const canChat = chatAgents(apps, null).length > 0;
+  // a run's inbox item opens the conversation it belongs to; the run names its thread
+  const openConversation = async (runId: string) => {
+    if (!ws) return;
+    try {
+      const run = await api.run(ws.name, runId);
+      if (!run.threadId) { notify('这次运行不属于任何对话', 'error'); return; }
+      setOpenThread(run.threadId);
+      setView('@chat');
+    } catch (e) {
+      notify(friendly(e, '打开对话失败'), 'error');
+    }
+  };
   return (
     <div className="shell">
       <header>
@@ -108,10 +126,12 @@ export function App(props: { api?: Api }) {
           {workspaces.map((w) => <option key={w.workspaceId} value={w.name}>{w.displayName}</option>)}
         </select>
         {me && <span className="who">{me.subject}</span>}
+        <button className="ghost theme" aria-label={theme === 'dark' ? '切换到浅色' : '切换到深色'} title={theme === 'dark' ? '浅色' : '深色'} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>{theme === 'dark' ? '☀' : '☾'}</button>
         <button className="secondary" onClick={signOut}>退出</button>
       </header>
       <nav>
         <button className={view === 'inbox' ? 'active' : ''} onClick={() => setView('inbox')}>收件箱{open > 0 && <span className="badge">{open}</span>}</button>
+        {canChat && <button className={view === '@chat' ? 'active' : ''} onClick={() => { setOpenThread(null); setView('@chat'); }}>对话</button>}
         {apps.some((a) => launchable(a).length > 0) && <button className={view === '@launch' ? 'active' : ''} onClick={() => setView('@launch')}>发起</button>}
         {memoryOn && <button className={view === '@memory' ? 'active' : ''} onClick={() => setView('@memory')}>记忆</button>}
         {me?.roles.includes('ws-admin') && <button className={view === '@admin' ? 'active' : ''} onClick={() => setView('@admin')}>管理</button>}
@@ -122,7 +142,8 @@ export function App(props: { api?: Api }) {
       <main>
         {error && <p className="error" role="alert">{error}</p>}
         {!ws && <p className="muted">你还不属于任何工作空间。</p>}
-        {ws && view === 'inbox' && <Inbox api={api} ws={ws} items={items} apps={apps} confirm={ui.confirm} notify={notify} onChanged={(it) => setItems((cur) => cur.map((x) => x.itemId === it.itemId ? it : x))} />}
+        {ws && view === 'inbox' && <Inbox api={api} ws={ws} items={items} apps={apps} confirm={ui.confirm} notify={notify} onChanged={(it) => setItems((cur) => cur.map((x) => x.itemId === it.itemId ? it : x))} onOpenRun={canChat ? openConversation : undefined} />}
+        {ws && view === '@chat' && <Conversations api={api} ws={ws} apps={apps} confirm={ui.confirm} notify={notify} open={openThread} />}
         {ws && view === '@launch' && <Launcher api={api} ws={ws} apps={apps} confirm={ui.confirm} notify={notify} />}
         {memoryOn && view === '@memory' && <MemoryView api={api} confirm={ui.confirm} notify={notify} />}
         {view === '@admin' && me?.roles.includes('ws-admin') && <Admin api={api} workspaces={workspaces} current={ws} notify={notify} onWorkspaces={() => api.workspaces().then(setWorkspaces).catch(() => {})} />}

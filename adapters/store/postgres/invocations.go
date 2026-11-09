@@ -98,6 +98,53 @@ func (s *Store) RecordInvocation(ctx context.Context, tenant string, v workspace
 }
 
 // ListInvocations lists a workspace's invocations, of one subject when given.
+// InvocationByResult is the member's own succeeded host.run invocation from the workspace whose result
+// names value in field ("id": the run, "threadId": the conversation) - the proof that what the shell asks
+// idp-host about through the workspace was started by this member from here (D22). NOT_FOUND otherwise.
+func (s *Store) InvocationByResult(ctx context.Context, tenant, workspaceID, subject, field, value string) (*workspace.Invocation, error) {
+	if field != "id" && field != "threadId" {
+		return nil, fail("INVALID", "unknown result field %q", field)
+	}
+	var out *workspace.Invocation
+	err := s.InTenant(ctx, tenant, func(tx pgx.Tx) error {
+		var err error
+		out, err = scanInvocation(tx.QueryRow(ctx, `SELECT `+invocationCols+` FROM action_invocations
+			WHERE workspace_id = $1 AND subject = $2 AND status = 'succeeded' AND target->>'kind' = 'host.run' AND result->>$3 = $4
+			ORDER BY created_at DESC LIMIT 1`, workspaceID, subject, field, value))
+		return err
+	})
+	return out, err
+}
+
+// ListConversations groups the member's succeeded host.run invocations from the workspace by the thread
+// their result names, newest first (D22).
+func (s *Store) ListConversations(ctx context.Context, tenant, workspaceID, subject string, limit int) ([]workspace.Conversation, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	out := []workspace.Conversation{}
+	err := s.InTenant(ctx, tenant, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT result->>'threadId', app, action, coalesce(target->>'agent', ''), count(*)::int, min(created_at), max(created_at),
+				(array_agg(result->>'id' ORDER BY created_at DESC))[1]
+			FROM action_invocations
+			WHERE workspace_id = $1 AND subject = $2 AND status = 'succeeded' AND target->>'kind' = 'host.run' AND coalesce(result->>'threadId', '') <> ''
+			GROUP BY 1, 2, 3, 4 ORDER BY max(created_at) DESC LIMIT $3`, workspaceID, subject, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var c workspace.Conversation
+			if err := rows.Scan(&c.ThreadID, &c.App, &c.Action, &c.Agent, &c.Runs, &c.FirstAt, &c.LastAt, &c.LastRunID); err != nil {
+				return err
+			}
+			out = append(out, c)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
 func (s *Store) ListInvocations(ctx context.Context, tenant, workspaceID, subject string, limit int) ([]workspace.Invocation, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100

@@ -12,7 +12,7 @@ describe('App', () => {
       if (url === '/shell-config.json') return json({ devMode: true, version: 't' });
       if (url === '/v1/workspaces') return json({ workspaces: [{ workspaceId: 'w1', name: 'us-ops', displayName: 'US operations' }] });
       if (url.endsWith('/apps')) return json({ apps: [] });
-      if (url.endsWith('/inbox')) return json({ items: [{ itemId: 'i1', workspaceId: 'w1', producer: 'p', externalRef: 'r', kind: 'task', title: 'Check the Ohio lane',
+      if (/\/inbox(\?|$)/.test(url)) return json({ items: [{ itemId: 'i1', workspaceId: 'w1', producer: 'p', externalRef: 'r', kind: 'task', title: 'Check the Ohio lane',
         ref: { system: 'external', kind: 't', id: '1' }, priority: 'normal', actions: [], entities: [], status: 'open', version: 1, createdAt: '', updatedAt: '' }] });
       return new Promise<Response>(() => {}); // the stream stays open
     }) as unknown as typeof fetch;
@@ -23,7 +23,7 @@ describe('App', () => {
     await new Promise((r) => setTimeout(r, 100));
     const count = (u: string) => urls.filter((x) => x === u).length;
     expect(count('/v1/workspaces')).toBeLessThanOrEqual(2); // StrictMode may run an effect twice
-    expect(count('/v1/workspaces/us-ops/inbox')).toBeLessThanOrEqual(2);
+    expect(count('/v1/workspaces/us-ops/inbox?status=all&archived=true&limit=300')).toBeLessThanOrEqual(2);
   });
 });
 
@@ -38,7 +38,7 @@ describe('App sign-in', () => {
       good = true;
       if (url === '/v1/workspaces') return json({ workspaces: [{ workspaceId: 'w1', name: 'us-ops', displayName: 'US operations' }] });
       if (url.endsWith('/apps')) return json({ apps: [] });
-      if (url.endsWith('/inbox')) return json({ items: [] });
+      if (/\/inbox(\?|$)/.test(url)) return json({ items: [] });
       return new Promise<Response>(() => {});
     }) as unknown as typeof fetch;
     const store = new Map<string, string>([['idp-workspace.token', 'bad']]);
@@ -61,7 +61,7 @@ describe('App navigation by role', () => {
       if (url === '/v1/me') return json({ subject: 's', tenant: 't', roles });
       if (url === '/v1/workspaces') return json({ workspaces: [{ workspaceId: 'w1', name: 'us-ops', displayName: 'US operations' }] });
       if (url.endsWith('/apps')) return json({ apps: [] });
-      if (url.endsWith('/inbox')) return json({ items: [] });
+      if (/\/inbox(\?|$)/.test(url)) return json({ items: [] });
       return new Promise<Response>(() => {});
     }) as unknown as typeof fetch;
     const store = new Map<string, string>([['idp-workspace.token', 'tok']]);
