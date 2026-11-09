@@ -43,3 +43,20 @@ describe('OIDC', () => {
     expect(a.verifier).toMatch(/^[A-Za-z0-9_-]{43}$/);
   });
 });
+
+describe('OIDC discovery failures', () => {
+  it('does not remember a failed discovery: the next attempt asks again', async () => {
+    let calls = 0;
+    const fetcher = (async () => {
+      calls += 1;
+      if (calls === 1) throw new TypeError('Failed to fetch'); // an untrusted certificate, say
+      return new Response(JSON.stringify({ authorization_endpoint: 'https://idp.example/auth', token_endpoint: 'https://idp.example/token' }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const store = new Map<string, string>();
+    const o = new OIDC({ issuer: 'https://idp.example/realms/idp', clientId: 'shell', scope: 'openid' }, 'http://localhost:8560', { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => void store.set(k, v), removeItem: (k) => void store.delete(k) }, fetcher);
+    await expect(o.authorizeUrl()).rejects.toThrow('Failed to fetch');
+    expect(await o.authorizeUrl()).toContain('https://idp.example/auth');
+    expect(calls).toBe(2);
+    expect(o.issuer).toBe('https://idp.example/realms/idp');
+  });
+});

@@ -156,11 +156,22 @@ export function App(props: { api?: Api }) {
 
 function SignIn({ devMode, oidc, error, onToken }: { devMode: boolean; oidc: OIDC | null; error: string | null; onToken(token: string): void }) {
   const [value, setValue] = useState('');
+  const [loginError, setLoginError] = useState<string | null>(null);
+  // a failure to reach the login service must be said: the browser fetches the issuer's discovery document itself, and a
+  // certificate it does not trust (a test CA) or an unreachable address would otherwise leave a button that does nothing
+  const startLogin = async () => {
+    setLoginError(null);
+    try {
+      window.location.assign(await oidc!.authorizeUrl());
+    } catch (e) {
+      setLoginError(`无法连接登录服务（${oidc!.issuer}）。请确认这个地址能在浏览器里打开；如果它用的是自签名或测试证书，先在浏览器里信任该证书，再回来重试。${e instanceof Error && e.message ? '（' + e.message + '）' : ''}`);
+    }
+  };
   return (
     <div className="signin">
       <h1>IDP Workspace</h1>
-      {error && <p className="error" role="alert">{error}</p>}
-      {oidc && <button className="primary-wide" onClick={async () => window.location.assign(await oidc.authorizeUrl())}>使用企业账号登录</button>}
+      {(error || loginError) && <p className="error" role="alert">{error ?? loginError}</p>}
+      {oidc && <button className="primary-wide" onClick={startLogin}>使用企业账号登录</button>}
       {devMode ? (
         <form onSubmit={(e) => { e.preventDefault(); if (value.trim()) onToken(value); }}>
           <label htmlFor="token">开发令牌（idp-workspace dev-token TENANT SUBJECT ws-member）</label>

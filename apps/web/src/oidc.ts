@@ -28,6 +28,7 @@ export class OIDC {
   private store: KV;
   private fetcher: typeof fetch;
   redirectUri: string;
+  get issuer(): string { return this.cfg.issuer; }
   constructor(cfg: OIDCConfig, origin: string, store: KV = sessionStorage, fetcher: typeof fetch = (...a) => fetch(...a)) {
     this.cfg = cfg;
     this.store = store;
@@ -40,6 +41,8 @@ export class OIDC {
       if (!r.ok) throw new Error(`discovery failed: HTTP ${r.status}`);
       return (await r.json()) as Discovery;
     });
+    // a failure is not remembered: the member may fix the cause (trust a certificate) and try again without a reload
+    this.discovery.catch(() => { this.discovery = null; });
     return this.discovery;
   }
 
