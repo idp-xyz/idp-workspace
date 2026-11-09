@@ -400,6 +400,7 @@ func (a *API) Handler() http.Handler {
 		transport.WriteJSON(w, 200, map[string]any{"subject": p.Subject, "tenant": p.Tenant, "roles": roles, "memory": a.CMI != nil})
 	})
 	mux.Handle("GET /v1/me/memory", a.role(a.memoryList, member))
+	mux.Handle("GET /v1/me/memory/export", a.role(a.memoryExport, member))
 	mux.Handle("DELETE /v1/me/memory/{id}", a.role(a.memoryDeleteOne, member))
 	mux.Handle("DELETE /v1/me/memory", a.role(a.memoryDeleteAll, member))
 	mux.Handle("GET /v1/workspaces", a.role(func(r *http.Request, p authorization.Principal) (int, any, error) {

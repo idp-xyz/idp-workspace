@@ -50,6 +50,29 @@ func (a *API) memoryList(r *http.Request, p authorization.Principal) (int, any, 
 	return 200, map[string]any{"memories": list}, nil
 }
 
+// memoryExport hands the member their own memory as a document (a data-access request). The count is
+// audited, never the content.
+func (a *API) memoryExport(r *http.Request, p authorization.Principal) (int, any, error) {
+	ds, err := a.cmi()
+	if err != nil {
+		return 0, nil, err
+	}
+	doc, f := dispatch.ExportMemory(r.Context(), ds, p)
+	if f != nil {
+		return 0, nil, memoryProblem(f)
+	}
+	n := 0
+	if recs, ok := doc["records"].([]any); ok {
+		n = len(recs)
+	}
+	if err := a.Store.InTenant(r.Context(), p.Tenant, func(tx pgx.Tx) error {
+		return postgres.Audit(r.Context(), tx, p.Tenant, p.Subject, "memory.export", "", map[string]any{"count": n})
+	}); err != nil {
+		return 0, nil, err
+	}
+	return 200, doc, nil
+}
+
 // memoryID accepts only a UUID-like token: it goes into a request body to idp-cmi and an audit row.
 func memoryID(s string) bool { return postgres.IsUUID(s) && len(s) == 36 }
 

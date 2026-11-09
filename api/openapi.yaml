@@ -86,6 +86,10 @@ paths:
     delete:
       summary: 'Delete all of the caller''s memory: lists (limit 100) and revokes each; audit memory.delete with the count (never the content). ws-member'
       responses: {'200': {description: '{revoked: N}'}, '404': {$ref: '#/components/responses/Error'}, '502': {$ref: '#/components/responses/Error'}}
+  /v1/me/memory/export:
+    get:
+      summary: 'The caller''s own memory as the CMI''s export document (idp-cmi.memory-export.v1, ADR-0001 D36), called with the caller''s own exchanged token and passed on unchanged; audit memory.export with the count. ws-member'
+      responses: {'200': {description: the export document}, '404': {$ref: '#/components/responses/Error'}, '502': {$ref: '#/components/responses/Error'}}
   /v1/me/memory/{id}:
     parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
     delete:

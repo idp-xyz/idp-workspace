@@ -193,3 +193,7 @@
 **验证**：Go 单元（`internal/api/runs_test.go`：中继 JSON 带上答案与成员的凭据、idp-host 的拒绝只带码与消息不带地址、没有凭据时的处理、事件流边到边转发、事件流的拒绝、id 的字符集校验）；集成（真实 PostgreSQL，假 idp-host，`conversations-relay`：跟随运行、决定工具调用、取消、读线程消息，对话列表只含成员自己的 `host.run` 调用、别的成员看到空列表）；web 单元（对话页、事件归并、Markdown、错误翻译）；真实 Chromium（`BROWSER=1 HOST=1 bash deploy/e2e.sh`）：登录后打开"对话"，发一条消息，看到回答流出、运行结束、对话出现在列表里。联调发现：壳此前用一次探测请求判断有没有"记忆"页，没配置时那次 404 被浏览器当成控制台错误，冒烟测试失败；改为 `/v1/me` 带 `memory` 标志，壳据此决定。
 
 **限制**：对话页只列 `host.run` 且输入是单个 `message` 的动作；没有"重新生成"之外的编辑历史；列表只有这个工作空间里成员自己的对话。
+
+## 补充：导出我的记忆（2026-11-09）
+
+`GET /v1/me/memory/export`（`ws-member`，要求 `targets.cmi`，否则 404 `NOT_CONFIGURED`）用成员本人的令牌调 idp-cmi 的 `GET /v1/memory/export`（CMI ADR D36），原样返回 `idp-cmi.memory-export.v1` 文档；审计 `memory.export`，详情只有 `count`。"记忆"页的"导出"按钮把它存成 `my-memory.json`。

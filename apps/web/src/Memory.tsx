@@ -43,6 +43,22 @@ export function MemoryView({ api, confirm, notify }: MemoryProps) {
       await load(); // refresh: the server's list is the truth (a 404 means it is already gone)
     }
   };
+  const download = async () => {
+    setBusy(true);
+    try {
+      const doc = await api.exportMemory();
+      const url = URL.createObjectURL(new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'my-memory.json';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      notify(e instanceof ApiError ? `导出失败：${e.code} ${e.message}` : String(e), 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
   const removeAll = async () => {
     if (!(await confirm('删除全部记忆？此操作不能撤销。'))) return;
     setBusy(true);
@@ -66,7 +82,10 @@ export function MemoryView({ api, confirm, notify }: MemoryProps) {
       {error && <p className="error" role="alert">{error}</p>}
       {items.length === 0 ? <p className="muted">还没有记忆。和助手聊几句，它会记住。</p> : (
         <>
-          <div className="actions"><button className="secondary" disabled={busy} onClick={removeAll}>删除全部</button></div>
+          <div className="actions">
+            <button className="secondary" disabled={busy} onClick={download}>导出</button>
+            <button className="secondary" disabled={busy} onClick={removeAll}>删除全部</button>
+          </div>
           <ul className="memory">
             {items.map((m) => {
               const long = m.content.length > CUT;

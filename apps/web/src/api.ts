@@ -50,6 +50,8 @@ export class Api {
 
   /** the member's own conversation memory in idp-cmi; ApiError 404 NOT_CONFIGURED when the workspace has none (ADR-0001 D21) */
   memory() { return this.request<{ memories: MemoryItem[] }>('GET', '/v1/me/memory').then((r) => r.memories); }
+  /** the member's memory as the CMI's export document (ADR-0001 D36) */
+  exportMemory() { return this.request<Record<string, unknown>>('GET', '/v1/me/memory/export'); }
   deleteMemory(id: string) { return this.request<{ revoked: number }>('DELETE', `/v1/me/memory/${encodeURIComponent(id)}`); }
   deleteAllMemory() { return this.request<{ revoked: number }>('DELETE', '/v1/me/memory'); }
 

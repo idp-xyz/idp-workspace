@@ -72,6 +72,12 @@ func newFakeCMI(t *testing.T, e *env) *fakeCMI {
 				recs = append(recs, fmt.Sprintf(`{"recordId":%q,"content":"secret fact %s","tags":["conversation"],"provenance":{"source":"idp-host","ref":"run:ws_%d","observedAt":"2026-11-0%dT10:00:00Z"},"validity":{"validUntil":"2026-12-0%dT10:00:00Z"},"status":"active","createdAt":"2026-11-0%dT10:00:00Z"}`, id, id[:2], i, 5-i, 5-i, 5-i))
 			}
 			_, _ = io.WriteString(w, `{"records":[`+strings.Join(recs, ",")+`]}`)
+		case r.Method == "GET" && r.URL.Path == "/v1/memory/export":
+			var recs []string
+			for _, id := range f.records[who] {
+				recs = append(recs, fmt.Sprintf(`{"recordId":%q,"content":"secret fact %s"}`, id, id[:2]))
+			}
+			_, _ = io.WriteString(w, fmt.Sprintf(`{"format":"idp-cmi.memory-export.v1","subject":%q,"records":[%s],"truncated":false}`, who, strings.Join(recs, ",")))
 		case r.Method == "POST" && r.URL.Path == "/v1/memory/revoke":
 			var body struct {
 				RecordID string `json:"recordId"`
@@ -151,6 +157,21 @@ func TestMyMemory(t *testing.T) {
 			t.Fatalf("carol sees %v", ms)
 		}
 		e.must(403, "GET", "/v1/me/memory", "svc-eer", nil) // a producer is not a member
+	})
+
+	t.Run("export-is-the-members-own-and-audited", func(t *testing.T) {
+		out := e.must(200, "GET", "/v1/me/memory/export", "bob", nil)
+		recs := out["records"].([]any)
+		if out["format"] != "idp-cmi.memory-export.v1" || out["subject"] != "bob" || len(recs) != 2 {
+			t.Fatalf("%v", out)
+		}
+		c := cmi.calls[len(cmi.calls)-1]
+		if c.Path != "/v1/memory/export" || c.Auth != "Bearer exchanged:bob" {
+			t.Fatalf("%+v", c)
+		}
+		if st, _ := e.call("GET", "/v1/me/memory/export", "svc-eer", nil); st != 403 {
+			t.Fatalf("a producer is not a member: %d", st)
+		}
 	})
 
 	t.Run("another-member-cannot-delete-by-guessing", func(t *testing.T) {

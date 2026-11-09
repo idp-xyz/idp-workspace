@@ -85,3 +85,13 @@ func RevokeMemory(ctx context.Context, ds *Downstream, p authorization.Principal
 	}
 	return out.Revoked, nil
 }
+
+// ExportMemory fetches the caller's own memory as idp-cmi's export document (ADR-0001 D36), passed
+// on unchanged for the member to save. Like the list, it uses the member's own token.
+func ExportMemory(ctx context.Context, ds *Downstream, p authorization.Principal) (map[string]any, *Failure) {
+	var out map[string]any
+	if _, f := ds.Do(ctx, p, http.MethodGet, "/v1/memory/export", "", nil, &out); f != nil {
+		return nil, f
+	}
+	return out, nil
+}
