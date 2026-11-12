@@ -194,6 +194,10 @@
 
 **限制**：对话页只列 `host.run` 且输入是单个 `message` 的动作；没有"重新生成"之外的编辑历史；列表只有这个工作空间里成员自己的对话。
 
+**补充（2026-11-12，工具确认的端到端验证）**：此前"替成员处理等待确认"只有单元与集成（假 idp-host）两层证据。现已在真实平台上验证：注册一个 `careful-coder`（与沙箱助手同样的两个工具，但 `confirmation.tools` 把 `sandbox__sandbox_run` 设为 `confirm`），bob 在"对话"页让它跑代码——idp-host 停下运行，页面显示等待中的调用与它将要执行的参数（代码）、过期时间与倒计时，输入框在运行等待期间不可用；bob 点"允许"后决定经 Workspace 到达 idp-host，运行从中断处继续、工具卡片变为"完成"、回答里是沙箱的输出（`answer 42`，3 步 / 2 次工具调用）；同一对话里第二次提问点"拒绝"，该调用显示"已拒绝"且代码没有执行；刷新页面后历史从 idp-host 读回。平台验收固化为 `tests/kind/full.sh` 的 PATH I（同一条路径的 API 断言，外加：运行处于 `AWAITING_INPUT`、事件流里有 `idp.host/confirmation.required`、管理员 alice 对别人的运行与决定都得到 404、未知的 decision 得到 422）。
+
+同时修掉一处隐患：浏览器冒烟里判断"运行已结束"用的是 `page.waitForFunction`，而壳的 CSP 是 `script-src 'self'`，Playwright 为这个谓词注入的求值会被拒绝（`unsafe-eval`）——只有在装了可对话的 agent 时才会走到那一行，所以此前没有暴露。改为等待终态选择器（`.turn.assistant.status-done|failed|canceled`）。
+
 ## 补充：导出我的记忆（2026-11-09）
 
 `GET /v1/me/memory/export`（`ws-member`，要求 `targets.cmi`，否则 404 `NOT_CONFIGURED`）用成员本人的令牌调 idp-cmi 的 `GET /v1/memory/export`（CMI ADR D36），原样返回 `idp-cmi.memory-export.v1` 文档；审计 `memory.export`，详情只有 `count`。"记忆"页的"导出"按钮把它存成 `my-memory.json`。

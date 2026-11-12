@@ -58,7 +58,8 @@ try {
     } catch {
       fail('no answer in the conversation: ' + (await page.textContent('.transcript')).slice(0, 500));
     }
-    await page.waitForFunction(() => !document.querySelector('.turn.assistant.status-running, .turn.assistant.status-queued'), null, { timeout: 60000 });
+    // a selector, not an evaluated predicate: the shell's CSP (script-src 'self') refuses waitForFunction
+    await page.waitForSelector('.turn.assistant.status-done, .turn.assistant.status-failed, .turn.assistant.status-canceled', { timeout: 60000 });
     const answer = (await page.textContent('.turn.assistant .answer')).trim();
     if (!answer) fail('the agent answered nothing');
     await page.waitForSelector('.chat-list .chat-item-title >> text=Why is order 1001 late?', { timeout: 10000 });
