@@ -8,6 +8,9 @@ describe('friendly', () => {
     expect(refused).toContain('问订单助手：');
     expect(refused).toContain('host-user');
     expect(refused).not.toContain('svc.cluster.local');
+    const conflict = friendly(new ApiError(409, 'TARGET_REJECTED', 'http://idp-host:8450 answered 409 CONFLICT'));
+    expect(conflict).toContain('另一个智能体'); // the cause the member can act on, not a guess about releases
+    expect(conflict).not.toContain('idp-host:8450');
     expect(friendly(new ApiError(502, 'TARGET_UNAVAILABLE', 'http://x unreachable'))).toBe('目标系统暂时不可用，请稍后再试');
     expect(friendly(new ApiError(422, 'INVALID_INPUT', '/message: minLength'))).toBe('输入不符合要求：/message: minLength');
     expect(friendly(new ApiError(404, 'NOT_FOUND', 'no such run'))).toContain('找不到');

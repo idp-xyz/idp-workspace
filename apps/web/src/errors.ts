@@ -13,7 +13,7 @@ export function friendly(e: unknown, what = ''): string {
   switch (e.code) {
     case 'TARGET_REJECTED':
       if (/403|FORBIDDEN|DELEGATION_REFUSED/.test(m)) return `${prefix}目标系统拒绝了你：你没有运行这个智能体的权限（需要 host-user 角色），请联系管理员`;
-      if (/409|CONFLICT/.test(m)) return `${prefix}目标系统拒绝：状态冲突（智能体可能没有已发布的版本）`;
+      if (/409|CONFLICT/.test(m)) return `${prefix}目标系统因当前状态拒绝：这条对话可能属于另一个智能体（开一个新对话），或该智能体还没有已发布的版本`;
       if (/404|NOT_FOUND/.test(m)) return `${prefix}目标系统里没有这个智能体`;
       return `${prefix}目标系统拒绝了这次调用（${noAddress(m)}）`;
     case 'TARGET_UNAVAILABLE':

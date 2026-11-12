@@ -141,6 +141,33 @@ describe('Conversations', () => {
     await waitFor(() => expect(screen.queryByText('Order 1001 waits for customs.')).toBeNull());
   });
 
+  it('sends to the agent the open conversation belongs to, not to whatever the picker shows', async () => {
+    // a conversation of coder/code.run while the picker's remembered choice is orders/order.review: idp-host would
+    // refuse a run in another agent's thread (409 CONFLICT), so the message must go to the conversation's agent
+    localStorage.setItem('idp.conversation-agent/us-ops', 'orders/order.review');
+    const { api, calls } = fakeApi({ conversations: [{ threadId: 'thr_old', app: 'coder', action: 'code.run', agent: 'sandbox-assistant', runs: 1, firstAt: '2026-11-07T01:00:00Z', lastAt: '2026-11-07T01:00:00Z', lastRunId: 'ws_old' }] });
+    (api as unknown as { workspace: unknown }).workspace = async () => ({ workspace: ws, roles: ['approver', 'dev'], member: true }); // both agents offered
+    render(<Conversations {...props(api)} />);
+    fireEvent.click(await screen.findByText('Where is order 1001?'));
+    await screen.findByText('Order 1001 waits for customs.');
+    expect((screen.getByLabelText('智能体') as HTMLSelectElement).value).toBe('coder/code.run'); // the picker follows the conversation
+    fireEvent.change(screen.getByLabelText('消息'), { target: { value: 'and now?' } });
+    fireEvent.click(screen.getByLabelText('发送'));
+    await waitFor(() => expect(calls.invoke).toHaveLength(1));
+    expect(calls.invoke[0][1]).toMatchObject({ app: 'coder', action: 'code.run', threadId: 'thr_old' });
+    localStorage.clear();
+  });
+
+  it('refuses to continue a conversation whose agent is no longer offered', async () => {
+    const { api, calls } = fakeApi({ conversations: [{ threadId: 'thr_old', app: 'gone', action: 'ask', agent: 'retired', runs: 1, firstAt: '2026-11-07T01:00:00Z', lastAt: '2026-11-07T01:00:00Z', lastRunId: 'ws_old' }] });
+    render(<Conversations {...props(api)} />);
+    fireEvent.click(await screen.findByText('Where is order 1001?'));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('已不在本工作空间提供'));
+    expect((screen.getByLabelText('消息') as HTMLTextAreaElement).disabled).toBe(true);
+    expect((screen.getByLabelText('发送') as HTMLButtonElement).disabled).toBe(true);
+    expect(calls.invoke).toHaveLength(0);
+  });
+
   it('tells a refused invocation in the member\'s words and offers a retry', async () => {
     const { api, calls } = fakeApi();
     (api as unknown as { invoke: unknown }).invoke = async () => { throw Object.assign(new Error('http://idp-host:8450 answered 403 FORBIDDEN'), { code: 'TARGET_REJECTED' }); };

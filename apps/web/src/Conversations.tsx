@@ -182,7 +182,9 @@ export function Conversations({ api, ws, apps, notify, confirm, open }: Conversa
   }, [api, ws, threadId, followRun, stopFollowing, notify]);
   useEffect(() => () => stopFollowing(), [stopFollowing]);
 
-  const send = async (text: string) => {
+  // The agent of the conversation that is open owns its idp-host thread; a message always goes to it, never to
+  // whatever the picker happens to show (idp-host refuses a run in a thread of another agent, 409 CONFLICT).
+  const send = async (agent: ChatAgent | null, text: string) => {
     if (!agent || busy) return;
     const question = text.trim();
     if (!question) return;
@@ -235,9 +237,9 @@ export function Conversations({ api, ws, apps, notify, confirm, open }: Conversa
     }
   };
 
-  const retry = (index: number) => {
+  const retry = (index: number, agent: ChatAgent | null) => {
     const prev = turns[index - 1];
-    if (prev?.kind === 'user') void send(prev.text);
+    if (prev?.kind === 'user') void send(agent, prev.text);
   };
 
   const newConversation = () => { stopFollowing(); setThreadId(null); setTurns([]); setSideOpen(false); };
@@ -250,8 +252,10 @@ export function Conversations({ api, ws, apps, notify, confirm, open }: Conversa
 
   if (roles === undefined) return <p className="muted">正在读取你在本工作空间的角色…</p>;
   if (agents.length === 0) return <p className="muted">没有可以对话的智能体。管理员在工作空间里安装带 <code>host.run</code> 动作的应用后，它们会出现在这里。</p>;
+  // what this conversation is with: the open one's own agent (null when it is no longer offered - its app was
+  // uninstalled or revoked - and then there is nothing to send to), or the picked one for a new conversation
   const current = list.find((c) => c.threadId === threadId);
-  const shownAgent = current ? agents.find((a) => a.key === `${current.app}/${current.action}`) ?? agent : agent;
+  const shownAgent = current ? agents.find((a) => a.key === `${current.app}/${current.action}`) ?? null : agent;
   return (
     <div className={`chat ${sideOpen ? 'side-open' : ''}`}>
       <aside className="chat-side" aria-label="对话列表">
@@ -259,7 +263,7 @@ export function Conversations({ api, ws, apps, notify, confirm, open }: Conversa
           <button type="button" className="primary-wide" onClick={newConversation}>＋ 新对话</button>
           <label className="field">
             <span>智能体</span>
-            <select aria-label="智能体" value={agent?.key ?? ''} onChange={(e) => { setAgentKey(e.target.value); if (threadId) newConversation(); }}>
+            <select aria-label="智能体" value={shownAgent?.key ?? agent?.key ?? ''} onChange={(e) => { setAgentKey(e.target.value); newConversation(); }}>
               {agents.map((a) => <option key={a.key} value={a.key}>{a.title}</option>)}
             </select>
           </label>
@@ -280,8 +284,8 @@ export function Conversations({ api, ws, apps, notify, confirm, open }: Conversa
         <div className="chat-head">
           <button type="button" className="ghost side-toggle" onClick={() => setSideOpen((v) => !v)} aria-label="显示对话列表">☰</button>
           <div className="chat-head-title">
-            <strong>{shownAgent?.title ?? '对话'}</strong>
-            {shownAgent && <span className="muted"> · 智能体 {shownAgent.agent}</span>}
+            <strong>{shownAgent?.title ?? (current ? `${current.app} · ${current.action}` : '对话')}</strong>
+            {shownAgent ? <span className="muted"> · 智能体 {shownAgent.agent}</span> : current && <span className="muted"> · 这个智能体已不可用</span>}
           </div>
           {live?.kind === 'assistant' && busy && <button type="button" className="secondary" onClick={() => cancel(live)}>停止</button>}
         </div>
@@ -295,9 +299,10 @@ export function Conversations({ api, ws, apps, notify, confirm, open }: Conversa
           )}
           {turns.map((t, i) => (t.kind === 'user'
             ? <div key={`u${i}`} className="turn user"><div className="bubble">{t.text}</div></div>
-            : <AssistantView key={`a${i}`} turn={t} onDecide={(call, d) => decide(t, call, d)} onRetry={() => retry(i)} onCancel={() => cancel(t)} />))}
+            : <AssistantView key={`a${i}`} turn={t} onDecide={(call, d) => decide(t, call, d)} onRetry={() => retry(i, shownAgent)} onCancel={() => cancel(t)} />))}
+          {!loading && current && !shownAgent && <p className="error" role="alert">这个对话的智能体（{current.app} / {current.action}）已不在本工作空间提供，无法在这里继续；请开一个新对话。</p>}
         </div>
-        <Composer agent={shownAgent} disabled={busy || !shownAgent} draft={draft} setDraft={setDraft} onSend={send} />
+        <Composer agent={shownAgent} disabled={busy || !shownAgent} draft={draft} setDraft={setDraft} onSend={(text) => send(shownAgent, text)} />
       </section>
     </div>
   );
