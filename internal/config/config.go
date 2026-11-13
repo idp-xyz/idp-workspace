@@ -45,6 +45,10 @@ type Exchange struct {
 	ClientSecretFile string `yaml:"clientSecretFile"`
 	Audience         string `yaml:"audience"`
 	CAFile           string `yaml:"caFile"`
+	// SessionBound asks for a refresh token in the member's own session and discards it (ADR-0001 D25): Keycloak then
+	// lets the downstream (idp-host) exchange this token again for a refresh token of its own, so that a long run keeps
+	// working until the member signs out instead of dying with the member's access token.
+	SessionBound bool `yaml:"sessionBound"`
 }
 
 // Secret reads the client secret file (re-read on every exchange: rotation).

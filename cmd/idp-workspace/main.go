@@ -166,7 +166,8 @@ func downstream(d *config.Downstream) (*dispatch.Downstream, error) {
 			return nil, err
 		}
 		out.Exchange = &dispatch.Exchanger{TokenURL: d.Exchange.TokenURL, ClientID: d.Exchange.ClientID, ClientSecret: d.Exchange.Secret, Audience: d.Exchange.Audience,
-			HTTP: &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{Proxy: nil, TLSClientConfig: xTLS}}}
+			SessionBound: d.Exchange.SessionBound,
+			HTTP:         &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{Proxy: nil, TLSClientConfig: xTLS}}}
 	}
 	return out, nil
 }

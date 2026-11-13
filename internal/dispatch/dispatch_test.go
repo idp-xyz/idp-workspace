@@ -192,3 +192,30 @@ func TestExchange(t *testing.T) {
 		t.Fatalf("%v", f)
 	}
 }
+
+// D25: a session-bound exchange asks for a refresh token (so that idp-host may exchange again within the member's session)
+// and keeps only the access token: the refresh token goes nowhere.
+func TestSessionBoundExchange(t *testing.T) {
+	var requested string
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		requested = r.Form.Get("requested_token_type")
+		_, _ = io.WriteString(w, `{"access_token":"host-token","refresh_token":"member-session-refresh","expires_in":300}`)
+	}))
+	defer idp.Close()
+	x := &Exchanger{TokenURL: idp.URL, ClientID: "idp-workspace", ClientSecret: func() (string, error) { return "s", nil }, Audience: "idp-host", SessionBound: true}
+	var got seen
+	host := fake(t, 202, `{"runId":"r","status":"QUEUED"}`, &got)
+	d := &Dispatcher{Host: &Downstream{Endpoint: host.URL, Auth: AuthExchange, Exchange: x}}
+	if _, f := d.Dispatch(context.Background(), req(workspace.Target{Kind: workspace.TargetHostRun, Agent: "a"}, `{"message":"hi"}`)); f != nil {
+		t.Fatal(f)
+	}
+	if requested != "urn:ietf:params:oauth:token-type:refresh_token" || got.auth != "Bearer host-token" || strings.Contains(string(got.raw), "member-session-refresh") {
+		t.Fatalf("requested %q, sent %s %s", requested, got.auth, got.raw)
+	}
+	x.SessionBound, x.cache = false, nil
+	_, _ = d.Dispatch(context.Background(), req(workspace.Target{Kind: workspace.TargetHostRun, Agent: "a"}, `{"message":"hi again"}`))
+	if requested != "urn:ietf:params:oauth:token-type:access_token" {
+		t.Fatalf("plain exchange asked for %q", requested)
+	}
+}

@@ -25,6 +25,8 @@ type Exchanger struct {
 	ClientID     string
 	ClientSecret func() (string, error)
 	Audience     string
+	// SessionBound requests a refresh token (bound to the member's session) and keeps only the access token (D25).
+	SessionBound bool
 	HTTP         *http.Client
 	Now          func() time.Time
 
@@ -65,7 +67,11 @@ func (e *Exchanger) Exchange(ctx context.Context, subjectToken string) (string, 
 	form.Set("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange")
 	form.Set("subject_token", subjectToken)
 	form.Set("subject_token_type", "urn:ietf:params:oauth:token-type:access_token")
-	form.Set("requested_token_type", "urn:ietf:params:oauth:token-type:access_token")
+	if e.SessionBound { // the refresh token is not kept: asking for it binds the exchange to the member's session
+		form.Set("requested_token_type", "urn:ietf:params:oauth:token-type:refresh_token")
+	} else {
+		form.Set("requested_token_type", "urn:ietf:params:oauth:token-type:access_token")
+	}
 	form.Set("audience", e.Audience)
 	form.Set("client_id", e.ClientID)
 	form.Set("client_secret", secret)

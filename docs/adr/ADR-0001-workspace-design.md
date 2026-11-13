@@ -229,3 +229,11 @@
 **验证**：单元（`adapters/blob`：AWS 文档的两个 SigV4 示例逐字节一致；对假服务的请求形状、路径编码、SSE 头、列表分页、404 / 超限 / 403 的处理且不把存储的错误详情外泄；配置拒绝）；集成（`make test-integration` 起一个按摘要固定的 RustFS 与 PostgreSQL；`TestFilesInTheObjectStore`：D23 的全部成员文件流程跑在对象存储上；行里没有内容、对象键与行一致；存储报告对象已加密；对象被改后下载得到 500 且不含改后的内容；删除与过期后对象消失；年轻的无主对象不清、过了时限的清掉、有行的不动）；平台 PATH J 走对象存储（compose 的 `files-s3`）。
 
 **局限**：桶的备份与版本由运维负责（数据库备份不再包含这些文件）；对象存储只有一组密钥，没有按租户分开的凭据；kind 上的 Workspace 仍用 `postgres`（那里的 RustFS 是数据库备份目标，不共用；kind 上也没有文件进出沙箱）。
+
+## 19. D25：交给 idp-host 的令牌绑定成员的会话（2026-11-13，配合 idp-host D38）
+
+| # | 决策 | 理由 |
+|---|---|---|
+| D25 | `targets.*.exchange` 增加 `sessionBound`：交换时请求 `requested_token_type=refresh_token`，**只用返回的访问令牌，refresh token 丢弃**（不缓存、不转发、不记录）。平台的 compose 对 `targets.host` 打开它 | idp-host 要在运行中续期它的网关凭据（D38），而 Keycloak 只允许对"在用户会话里有客户端会话"的令牌再交换出 refresh token；Workspace 这一次请求就是为了留下这个客户端会话。Workspace 自己不需要续期，所以不保留 refresh token，少一个要保护的凭据 |
+
+**验证**：`internal/dispatch` 的 `TestSessionBoundExchange`（请求的类型、下游只收到访问令牌、refresh token 不出现在任何请求里、关掉后恢复普通交换）；平台 PATH I、PATH K。
