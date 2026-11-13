@@ -43,6 +43,8 @@ func fail(code, format string, a ...any) error {
 type Store struct {
 	Pool *pgxpool.Pool
 	Now  func() time.Time // injectable clock (tests)
+	// Blobs keeps members' file contents in an object store (D24); nil = in the database.
+	Blobs Blobs
 }
 
 // Open connects as the service role and verifies that RLS applies to it.

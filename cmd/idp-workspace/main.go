@@ -29,6 +29,9 @@
 //	                             app tokens' IDP_WORKSPACE_PUBLIC_URL), host.run actions get file tickets; reachable only from the sandbox
 //	IDP_WORKSPACE_FILE_MB (25) IDP_WORKSPACE_FILE_QUOTA_MB (200) IDP_WORKSPACE_FILE_QUOTA_FILES (500)
 //	IDP_WORKSPACE_FILE_RETENTION_DAYS (30) IDP_WORKSPACE_FILE_TICKET_MIN (60) IDP_WORKSPACE_RUN_FILES (10)   members' files
+//	IDP_WORKSPACE_FILE_STORE     postgres (default) or s3: where file contents live (ADR-0001 D24); s3 takes
+//	                             IDP_WORKSPACE_S3_ENDPOINT (http(s)://host:port), _S3_BUCKET, _S3_REGION (us-east-1),
+//	                             _S3_ACCESS_KEY_FILE, _S3_SECRET_KEY_FILE, _S3_CA_FILE (optional), _S3_SSE (default true: SSE-S3)
 //	OTEL_EXPORTER_OTLP_ENDPOINT ...   OTLP/HTTP trace export (off without an endpoint)
 package main
 
@@ -45,6 +48,7 @@ import (
 	"syscall"
 	"time"
 
+	"idp-workspace/adapters/blob"
 	"idp-workspace/adapters/identity"
 	"idp-workspace/adapters/store/postgres"
 	"idp-workspace/internal/api"
@@ -240,6 +244,26 @@ func serve(log *slog.Logger) error {
 		return err
 	}
 	defer store.Close()
+	switch kind := env("IDP_WORKSPACE_FILE_STORE", "postgres"); kind { // ADR-0001 D24
+	case "postgres":
+	case "s3":
+		s3, err := blob.New(blob.Config{Endpoint: env("IDP_WORKSPACE_S3_ENDPOINT", ""), Bucket: env("IDP_WORKSPACE_S3_BUCKET", ""), Region: env("IDP_WORKSPACE_S3_REGION", "us-east-1"),
+			AccessKeyFile: env("IDP_WORKSPACE_S3_ACCESS_KEY_FILE", ""), SecretKeyFile: env("IDP_WORKSPACE_S3_SECRET_KEY_FILE", ""), CAFile: env("IDP_WORKSPACE_S3_CA_FILE", ""),
+			SSE: env("IDP_WORKSPACE_S3_SSE", "true") != "false"})
+		if err != nil {
+			return fmt.Errorf("IDP_WORKSPACE_FILE_STORE=s3: %w", err)
+		}
+		cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		err = s3.Check(cctx)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("the file object store does not answer (bucket %s): %w", s3.Bucket, err)
+		}
+		store.Blobs = s3
+		log.Info("file contents in the object store", "endpoint", s3.Endpoint.String(), "bucket", s3.Bucket, "sse", s3.SSE)
+	default:
+		return fmt.Errorf("IDP_WORKSPACE_FILE_STORE must be postgres or s3, not %q", kind)
+	}
 	metrics := observability.NewMetrics()
 	if ms := observability.ServeMetrics(env("IDP_METRICS_LISTEN", ""), metrics, log); ms != nil {
 		defer ms.Close()

@@ -160,13 +160,14 @@ type env struct {
 	// D23: the internal file endpoint and the tickets runs get
 	internal *httptest.Server
 	tickets  *files.Ticketer
+	ownerURL string
 }
 
 var profile = identity.Profile{Issuer: "idp-workspace-it", Audience: "idp-workspace", TenantClaim: "tenant_id", RolesClaim: "roles"}
 
 const devSecret = "integration-test-secret-at-least-32-bytes-long"
 
-func newEnv(t *testing.T) *env {
+func newEnv(t *testing.T, opts ...func(*postgres.Store)) *env {
 	t.Helper()
 	ownerURL, serviceURL := scratchDB(t)
 	ctx := context.Background()
@@ -180,10 +181,13 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	t.Cleanup(store.Close)
+	for _, o := range opts {
+		o(store)
+	}
 	if _, err := postgres.Open(ctx, ownerURL); err == nil {
 		t.Fatal("the superuser connection must be refused")
 	}
-	e := &env{t: t, store: store, tenantA: tenantA, tenantB: tenantB, secret: []byte("webhook-secret-of-at-least-32-bytes!!")}
+	e := &env{t: t, store: store, tenantA: tenantA, tenantB: tenantB, secret: []byte("webhook-secret-of-at-least-32-bytes!!"), ownerURL: ownerURL}
 	e.tokens = map[string]string{}
 	for name, spec := range map[string]struct {
 		tenant string
