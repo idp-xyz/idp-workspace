@@ -17,10 +17,13 @@ const (
 // Principal is an authenticated caller.
 type Principal struct {
 	Subject string
-	Tenant  string
-	Roles   []string
-	Method  string    // "jwt" or "dev"
-	Expires time.Time // credential expiry
+	// TokenSubject is the token's own sub claim: how the rest of the platform (idp-mcp, idp-sandbox) names the caller,
+	// which differs from Subject when IDP_WORKSPACE_SUBJECT_CLAIM names another claim (file tickets, D23).
+	TokenSubject string
+	Tenant       string
+	Roles        []string
+	Method       string    // "jwt" or "dev"
+	Expires      time.Time // credential expiry
 	// Client is the OAuth client the token was issued to (azp); Actor the party acting for the
 	// subject in a delegated token (RFC 8693 act claim). Audit only.
 	Client string

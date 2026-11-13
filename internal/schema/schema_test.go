@@ -31,3 +31,31 @@ func TestCompileAndValidate(t *testing.T) {
 		}
 	}
 }
+
+func TestFileFieldsTakeTheMembersFiles(t *testing.T) {
+	raw := json.RawMessage(`{"type":"object","properties":{"message":{"type":"string"},"files":{"type":"array","items":{"type":"string","format":"idp-file"}},"cover":{"type":"string","format":"idp-file"}},"required":["message"]}`)
+	s, err := Compile(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := "6f1c2a9e-8d4b-4c3a-9e21-0b7d5f3a8c41", "7a2d3b0f-9e5c-4d4b-8f32-1c8e6a4b9d52"
+	ok := json.RawMessage(`{"message":"x","files":["` + a + `","` + b + `","` + a + `"],"cover":"` + b + `"}`)
+	if err := Validate(s, ok); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{`{"message":"x","files":["../etc/passwd"]}`, `{"message":"x","cover":"attachment:1"}`} {
+		if Validate(s, json.RawMessage(bad)) == nil {
+			t.Errorf("%s accepted", bad)
+		}
+	}
+	if f := FileFields(raw); len(f) != 2 || !f["files"] || f["cover"] {
+		t.Fatalf("%v", f)
+	}
+	// field-name order (cover before files), array order, no repeats
+	if got := FileRefs(raw, ok); strings.Join(got, ",") != b+","+a {
+		t.Fatalf("%v", got)
+	}
+	if FileRefs(json.RawMessage(`{"type":"object"}`), ok) != nil {
+		t.Fatal("refs from a schema without file fields")
+	}
+}

@@ -1,5 +1,5 @@
 {
-  "description": "idp.telos.workspace 1.1.0 的示例：每一个都是 idp-workspace 的 Go 值序列化的结果（API 返回或应用桥发送的形状）。",
+  "description": "idp.telos.workspace 1.2.0 的示例：每一个都是 idp-workspace 的 Go 值序列化的结果（API 返回或应用桥发送的形状）。",
   "generatedBy": "go test ./internal/workspace -run TestContract -update",
   "examples": [
     {
@@ -746,6 +746,36 @@
       "value": {
         "code": "ACTION_NOT_OFFERED",
         "message": "the item does not offer orders/order.hold"
+      }
+    },
+    {
+      "definition": "MemberFile",
+      "value": {
+        "id": "6f1c2a9e-8d4b-4c3a-9e21-0b7d5f3a8c41",
+        "workspace": "us-ops",
+        "name": "报价单.docx",
+        "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "size": 48213,
+        "sha256": "3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b",
+        "source": "upload",
+        "sensitivity": "internal",
+        "createdAt": "2026-11-04T09:00:00Z",
+        "expiresAt": "2026-12-04T09:00:00Z"
+      }
+    },
+    {
+      "definition": "MemberFile",
+      "value": {
+        "id": "7a2d3b0f-9e5c-4d4b-8f32-1c8e6a4b9d52",
+        "workspace": "us-ops",
+        "name": "报价单-修订.docx",
+        "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "size": 49102,
+        "sha256": "4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c",
+        "source": "run:ws_7f3a1c2e5b6d4c8e9f0123456789abcd",
+        "sensitivity": "internal",
+        "createdAt": "2026-11-04T10:00:00Z",
+        "expiresAt": "2026-12-04T10:00:00Z"
       }
     }
   ]

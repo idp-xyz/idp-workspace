@@ -27,6 +27,7 @@ components:
     InboxItem: {$ref: 'contracts/schema.json#/$defs/InboxItem'}
     WorkContext: {$ref: 'contracts/schema.json#/$defs/WorkContext'}
     Invocation: {$ref: 'contracts/schema.json#/$defs/Invocation'}
+    MemberFile: {$ref: 'contracts/schema.json#/$defs/MemberFile'}
     Problem: {$ref: 'contracts/schema.json#/$defs/Problem'}
     Error: {type: object, required: [error], properties: {error: {$ref: '#/components/schemas/Problem'}}}
   responses:
@@ -138,6 +139,30 @@ paths:
   /v1/workspaces/{ws}/invocations:
     parameters: [{$ref: '#/components/parameters/ws'}]
     get: {summary: 'The caller''s invocations. ws-member', responses: {'200': {description: '{invocations}'}}}
+
+  # Members' files (D23): only their owner lists, reads, downloads and deletes them; content is never inlined.
+  /v1/workspaces/{ws}/files:
+    parameters: [{$ref: '#/components/parameters/ws'}]
+    post:
+      summary: >-
+        Upload a file (the body, at most IDP_WORKSPACE_FILE_MB, default 25 MB) as the caller's: ?name= is its name (one
+        path element is kept). Accepted: .docx .xlsx .pptx .pdf .png .jpg .jpeg .csv .txt .md, content matching the
+        name, no macro formats or macro projects, Office packages within part, size and ratio limits (422
+        FILE_REFUSED); 413 over the size; 409 QUOTA over the caller's quota. An action input field of format idp-file
+        takes its id. ws-member
+      parameters: [{name: name, in: query, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/octet-stream: {schema: {type: string, format: binary}}}}
+      responses: {'201': {description: the file, content: {application/json: {schema: {$ref: '#/components/schemas/MemberFile'}}}}, '409': {$ref: '#/components/responses/Error'}, '413': {$ref: '#/components/responses/Error'}, '422': {$ref: '#/components/responses/Error'}}
+    get:
+      summary: 'The caller''s files in this workspace, newest first (?source=upload or run:<runId>, ?limit= at most 500). ws-member'
+      responses: {'200': {description: '{files: [MemberFile]}'}}
+  /v1/workspaces/{ws}/files/{id}:
+    parameters: [{$ref: '#/components/parameters/ws'}, {name: id, in: path, required: true, schema: {type: string}}]
+    get: {summary: 'One of the caller''s files (another member''s is 404). ws-member', responses: {'200': {description: the file, content: {application/json: {schema: {$ref: '#/components/schemas/MemberFile'}}}}, '404': {$ref: '#/components/responses/Error'}}}
+    delete: {summary: 'Delete one of the caller''s files. ws-member', responses: {'204': {description: deleted}, '404': {$ref: '#/components/responses/Error'}}}
+  /v1/workspaces/{ws}/files/{id}/content:
+    parameters: [{$ref: '#/components/parameters/ws'}, {name: id, in: path, required: true, schema: {type: string}}]
+    get: {summary: 'Download: Content-Disposition attachment, X-Content-Type-Options nosniff, CSP sandbox, no-store. ws-member', responses: {'200': {description: the bytes}, '404': {$ref: '#/components/responses/Error'}}}
 
   # Conversations with the agents (D22): relayed to idp-host with the caller's own credential for it,
   # and only for a run or a thread the caller started from this workspace (anything else is 404).

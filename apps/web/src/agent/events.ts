@@ -40,7 +40,8 @@ export type Block =
   | { kind: 'text'; id: string; text: string; done: boolean }
   | { kind: 'tool'; call: ToolStep }
   | { kind: 'context'; packageId?: string; items?: number; tokens?: number; skipped?: string; stale?: string }
-  | { kind: 'notice'; level: 'info' | 'warn'; text: string };
+  | { kind: 'notice'; level: 'info' | 'warn'; text: string }
+  | { kind: 'file'; ref: string; name: string; size: number; mediaType: string };
 
 export type RunStatus = 'queued' | 'running' | 'awaiting' | 'done' | 'failed' | 'canceled';
 export interface Usage { input: number; output: number; models: string[] }
@@ -54,7 +55,7 @@ export interface AssistantTurn {
   error?: { code: string; message: string };
   lastEventId: string;
 }
-export interface UserTurn { kind: 'user'; id: string; text: string }
+export interface UserTurn { kind: 'user'; id: string; text: string; files?: string[] }
 export type Turn = UserTurn | AssistantTurn;
 
 export function newAssistantTurn(runId: string, status: RunStatus = 'queued'): AssistantTurn {
@@ -174,11 +175,31 @@ function custom(t: AssistantTurn, name: string, v: Record<string, unknown>): Ass
       return { ...t, blocks: [...t.blocks, { kind: 'notice', level: 'warn', text: `输出被护栏拦下：${str(v.rule)}${v.detail ? ' · ' + str(v.detail) : ''}` }] };
     case 'idp.host/subagent.started':
       return { ...t, blocks: [...t.blocks, { kind: 'notice', level: 'info', text: `委派给子智能体 ${str(v.agent ?? v.agentId ?? v.childRunId)}` }] };
+    case 'idp.host/file.delivered': // D23: a file the run delivered to the member
+      if (!str(v.ref) || t.blocks.some((b) => b.kind === 'file' && b.ref === str(v.ref))) return t;
+      return { ...t, blocks: [...t.blocks, { kind: 'file', ref: str(v.ref), name: str(v.name) || 'file', size: num(v.size), mediaType: str(v.mediaType) }] };
     case 'idp.host/subagent.finished':
       return { ...t, blocks: [...t.blocks, { kind: 'notice', level: 'info', text: `子智能体完成${v.status ? '：' + str(v.status) : ''}` }] };
     default:
       return t;
   }
+}
+
+/** adds the files each run delivered (the member's files whose source is run:<runId>) to the turns of those runs */
+export function withRunFiles(turns: Turn[], files: { id: string; name: string; size: number; mediaType: string; source: string; createdAt?: string }[]): Turn[] {
+  const byRun = new Map<string, typeof files>();
+  for (const f of files) {
+    if (!f.source.startsWith('run:')) continue;
+    const run = f.source.slice(4);
+    byRun.set(run, [...(byRun.get(run) ?? []), f]);
+  }
+  return turns.map((t) => {
+    if (t.kind !== 'assistant' || !byRun.has(t.runId)) return t;
+    const have = new Set(t.blocks.flatMap((b) => (b.kind === 'file' ? [b.ref] : [])));
+    const add = (byRun.get(t.runId) ?? []).slice().sort((a, b) => (a.createdAt ?? '').localeCompare(b.createdAt ?? ''))
+      .filter((f) => !have.has(f.id)).map((f): Block => ({ kind: 'file', ref: f.id, name: f.name, size: f.size, mediaType: f.mediaType }));
+    return add.length ? { ...t, blocks: [...t.blocks, ...add] } : t;
+  });
 }
 
 /** the tool calls of the turn that wait for the member */

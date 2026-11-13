@@ -13,7 +13,7 @@ import (
 // tools/platform.py matrix), every field the workspace reads of an AgentRun is required there, and
 // the published examples decode into what the workspace reads.
 func TestHostContractPin(t *testing.T) {
-	dir := "../../tests/contracts/idp.telos.host/1.7.0/"
+	dir := "../../tests/contracts/idp.telos.host/1.8.0/"
 	var schema struct {
 		Defs map[string]struct {
 			Required   []string                   `json:"required"`

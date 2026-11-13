@@ -201,3 +201,17 @@
 ## 补充：导出我的记忆（2026-11-09）
 
 `GET /v1/me/memory/export`（`ws-member`，要求 `targets.cmi`，否则 404 `NOT_CONFIGURED`）用成员本人的令牌调 idp-cmi 的 `GET /v1/memory/export`（CMI ADR D36），原样返回 `idp-cmi.memory-export.v1` 文档；审计 `memory.export`，详情只有 `count`。"记忆"页的"导出"按钮把它存成 `my-memory.json`。
+
+## 17. D23：成员的文件（2026-11-13 决策与实施，平台 ADR-0002 阶段 1）
+
+起因：office 档位（平台 ADR-0002 阶段 0）让智能体能在沙箱里做 Word / Excel / PowerPoint，但成员交不出自己的文件，也拿不到做好的文件。平台 ADR-0002 决定文件归 Workspace（F1），字节凭票据在沙箱与 Workspace 之间带外传递（F3、F4），交付物在对话页下载（F7）。
+
+| # | 决策 | 理由 |
+|---|---|---|
+| D23 | **成员文件与运行的票据**。新表 `member_files`（迁移 0003，按租户强制 RLS）：所有者、所在工作空间、名称、媒体类型、大小、SHA-256、来源（`upload` 或 `run:<runId>`）、敏感级别（缺省 internal）、内容（PostgreSQL 的 bytea）、过期时间（缺省 30 天，每小时清除过期的）。接口只给所有者：`POST /v1/workspaces/{ws}/files?name=`（请求体就是文件）、`GET …/files`（`?source=`）、`GET …/files/{id}`、`GET …/files/{id}/content`（`Content-Disposition: attachment`、`nosniff`、CSP `sandbox`、`no-store`，壳里不渲染）、`DELETE …/files/{id}`；管理员也看不到别人的文件。收与交都检查文件：扩展名白名单（.docx .xlsx .pptx .pdf .png .jpg .jpeg .csv .txt .md），带宏的格式与包里的 `vbaProject.bin` 拒绝，内容须与扩展名相符，Office 包限部件数、解压后大小与压缩比；单个文件 25 MB，每个成员在租户内 200 MB / 500 个，名称只留一个路径元素。动作输入 Schema 用 `format: idp-file`（字符串或其数组，值为文件 id）声明收文件的字段；调用时这些 id 必须是调用者本人在这个工作空间的文件（否则 422），至多 10 个。`host.run` 的调用为这次运行（`ws_<invocation>`）签票据：每个附件一张读票据（租户、主体、文件、运行），再加一张写票据（租户、主体、运行、工作空间、至多 10 个文件、每个 25 MB），以 idp-host 契约 1.8.0 的 `idp.host/attachments` 与 `idp.host/delivery` 传过去。票据用应用令牌的 ES256 密钥签（D15），受众 `idp-workspace-files`，有效 60 分钟；`sub` 是成员令牌自己的 `sub`（网关转发给沙箱的调用者就是它，沙箱据此拒绝别人的票据），`owner` 是 Workspace 认的成员（`IDP_WORKSPACE_SUBJECT_CLAIM`，文件的所有者）——两者在 compose 里不同（`preferred_username` 与 Keycloak 的 UUID），实测前写成同一个会让每张票据在沙箱被拒。沙箱在**内部监听**（`IDP_WORKSPACE_INTERNAL_LISTEN`，只该让 idp-sandbox 到达）上凭票据取文件（`GET /internal/v1/files/content`）与交付（`POST /internal/v1/files`，名称在 `Content-Disposition`），交付的文件成为所有者的文件，来源 `run:<runId>`。对话页：动作收文件时输入框旁有附件按钮（上传后随问题发出），`idp.host/file.delivered` 事件与历史运行的交付物显示为可下载的文件；收件箱的运行事项列出交付的文件名 | 文件归成员：成员在壳里看、管、删；沙箱工作区是临时的，不适合当交付物的家。票据把权限缩到"这次运行、这个文件、这一小时"，沙箱不必拿未签名的转发身份（idp-mcp D43）向 Workspace 证明身份。内部接口分开监听，公开端口上没有凭票据就能取字节的入口。不渲染 Office 文件，壳就不解析不可信的文档 |
+
+**配置**：`IDP_WORKSPACE_INTERNAL_LISTEN`（设了且有应用令牌密钥，`host.run` 才带票据；没有则附件被拒绝、运行不能交付，上传照常）、`IDP_WORKSPACE_FILE_MB`（25）、`IDP_WORKSPACE_FILE_QUOTA_MB`（200）、`IDP_WORKSPACE_FILE_QUOTA_FILES`（500）、`IDP_WORKSPACE_FILE_RETENTION_DAYS`（30）、`IDP_WORKSPACE_FILE_TICKET_MIN`（60）、`IDP_WORKSPACE_RUN_FILES`（10）。注意：开了票据，所有 `host.run` 都带交付许可，idp-host 因此需要 `IDP_HOST_CREDENTIAL_KEY`（否则 409）。
+
+**验证**：单元（`internal/files`：票据往返，别的密钥、应用令牌、缺 run、篡改、过期都打不开；类型检查与名称；`internal/schema`：`idp-file` 格式与字段顺序；`internal/dispatch`：带文件的 `host.run` 送出的选项按钉住的 idp-host 1.8.0 RunOptions 校验通过，读写票据各自绑定成员、文件、运行与工作空间，没有签票据的配置时附件被拒；`internal/runs`：交付的文件名进入事项）；集成（`TestWorkspaceEndToEnd/member-files`，真实 PostgreSQL：上传与 7 种拒绝、非成员、只有所有者能列、读、下载，管理员与别的租户不行；carol 不能附 bob 的文件；运行拿到的读票据取回原字节，写票据、成员令牌、无票据都不行，公开端口上没有内部接口；凭写票据交付、宏与超大文件被拒、一次运行至多 2 个；bob 能下载交付物，carol 不能；过期票据失效；配额；删除后票据取不到）；壳（vitest：附件随问题发出、交付物可下载、历史运行的交付物归到对应的回合）。
+
+**局限**：内容存在 PostgreSQL（单文件 25 MB 以内合适；更大或更多时换对象存储，接口不变）；敏感级别只有字段，外部模型的上限（平台 ADR-0002 F8）未实施；票据在有效期内可重复使用（没有一次性消费），由运行与文件范围、短有效期限制；历史对话里看不到当时附了哪些文件（运行的消息只有文字）。

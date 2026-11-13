@@ -35,6 +35,7 @@ import (
 	"idp-workspace/internal/apptoken"
 	"idp-workspace/internal/authorization"
 	"idp-workspace/internal/dispatch"
+	"idp-workspace/internal/files"
 	"idp-workspace/internal/observability"
 	"idp-workspace/internal/runs"
 )
@@ -156,6 +157,9 @@ type env struct {
 	eer     *recorder
 	hook    *recorder
 	secret  []byte
+	// D23: the internal file endpoint and the tickets runs get
+	internal *httptest.Server
+	tickets  *files.Ticketer
 }
 
 var profile = identity.Profile{Issuer: "idp-workspace-it", Audience: "idp-workspace", TenantClaim: "tenant_id", RolesClaim: "roles"}
@@ -227,7 +231,10 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
+	e.tickets = &files.Ticketer{Signer: signer, TTL: time.Hour}
+	d.Tickets, d.DeliverFiles, d.DeliverBytes = e.tickets, 2, 1<<20
 	a := &api.API{Store: store, Auth: verifier, Dispatcher: d, Log: log, Metrics: observability.NewMetrics(), Version: "it", WebDir: web, DevMode: true,
+		Files:     api.FileConfig{MaxBytes: 1 << 20, QuotaBytes: 3 << 20, QuotaFiles: 6, Retention: time.Hour, RunFiles: 2, Tickets: e.tickets},
 		AppTokens: signer, OIDC: &api.ShellOIDC{Issuer: "http://127.0.0.1:7080/realms/idp", ClientID: "workspace-shell", Scope: "openid"},
 		Runs: &runs.Follower{Store: store, Endpoint: e.host.srv.URL, Log: log}}
 	tp, _, err := observability.Setup("idp-workspace-it", "it", log)
@@ -236,6 +243,8 @@ func newEnv(t *testing.T) *env {
 	}
 	e.api = httptest.NewServer(observability.HTTPMiddleware(tp, "idp-workspace/it", a.Handler()))
 	t.Cleanup(e.api.Close)
+	e.internal = httptest.NewServer(a.InternalHandler())
+	t.Cleanup(e.internal.Close)
 	return e
 }
 
@@ -983,6 +992,8 @@ func TestWorkspaceEndToEnd(t *testing.T) {
 		e.must(204, "DELETE", "/api/v1/workspaces/us-ops/installations/orders", "alice", nil)
 		e.must(404, "DELETE", "/api/v1/workspaces/us-ops/installations/orders", "alice", nil)
 	})
+
+	t.Run("member-files", func(t *testing.T) { memberFiles(t, e) })
 
 	t.Run("audit", func(t *testing.T) {
 		seen := map[string]bool{}

@@ -11,9 +11,10 @@ IDP TELOS 的企业工作入口（Workspace）：工作空间与成员、应用�
 - **应用桥**：`packages/bridge`（TypeScript、零依赖）——壳端只接受应用入口源的消息、只执行清单申请的能力；应用端带超时与关联的请求；webhook 签名校验（与 Go 端同一测试向量）。
 - **Web 壳**（`apps/web`，React）：工作空间、收件箱（SSE 实时推送）、发起（按动作的输入 Schema 生成表单，发起不依附事项的动作，ADR D19）、应用导航与沙箱 frame、管理员的管理页（工作空间与成员、发布 / 撤销 / 安装应用、审计）；镜像内置并由服务同源提供。`host.run` 的结果自动回到发起者的收件箱。与真实 idp-host 的联调：`HOST=1 bash deploy/e2e.sh`；浏览器冒烟：`BROWSER=1 bash deploy/e2e.sh`。
 - **与 agent 对话**（D22）：壳的"对话"页——选一个已安装应用提供的 agent，消息的回答逐字流出，每个工具调用的参数与结果、等待确认的工具调用（成员在页面上确认或拒绝）、取消、回到旧对话；Workspace 用成员自己的令牌中继 idp-host 的运行事件、线程与决定（只触达成员从这个工作空间发起的运行与线程），idp-host 仍是它们的所有者。
+- **成员的文件**（D23）：成员上传文件（只有所有者能看、下载、删除；类型白名单、拒绝宏、校验内容），动作用 `format: idp-file` 收文件；`host.run` 为每个附件签读票据、再签一张交付用的写票据（idp-host 契约 1.8.0），idp-sandbox 在内部监听（`IDP_WORKSPACE_INTERNAL_LISTEN`）上凭票据取文件、交付做好的文件；对话页可附文件、下载交付物。
 - **我的记忆**（D21）：配置 `targets.cmi` 后，成员在壳的"记忆"页查看并删除助手存进 idp-cmi 的对话记忆（`GET /v1/me/memory`、`DELETE /v1/me/memory/{id}`、`DELETE /v1/me/memory`），始终用成员本人的令牌（可令牌交换）调用 CMI；删除写审计，不含内容；未配置时 404 `NOT_CONFIGURED`，壳隐藏该页。
 - **登录与令牌**（M3）：壳以 OIDC 授权码 + PKCE 登录；应用可申请 `identity.token`，由 Workspace 签发给应用后端的短期 ES256 令牌（`/.well-known/jwks.json`，`packages/bridge` 的 `verifyAppToken` 校验）；下游凭据可用 RFC 8693 令牌交换。真实 Keycloak 的端到端：`OIDC=1 BROWSER=1 bash deploy/e2e.sh`。
-- 契约 `idp.telos.workspace` 1.1.0 在 [`api/contracts/`](api/contracts)（`go test ./internal/workspace -run TestContract`），接口见 [`api/openapi.yaml`](api/openapi.yaml)。
+- 契约 `idp.telos.workspace` 1.2.0 在 [`api/contracts/`](api/contracts)（`go test ./internal/workspace -run TestContract`），接口见 [`api/openapi.yaml`](api/openapi.yaml)。
 
 ## 运行
 

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -31,6 +32,9 @@ var invocationStatus = map[string]int{
 // schema, then the target. Every forwarded attempt is recorded; Idempotency-Key makes a retry return
 // the recorded invocation instead of acting twice.
 var threadIDRE = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
+
+// maxAttachments is how many files one action may name (idp-host takes at most 10 per run).
+const maxAttachments = 10
 
 func (a *API) invoke(r *http.Request, p authorization.Principal) (int, any, error) {
 	raw, err := readBody(r)
@@ -118,6 +122,19 @@ func (a *API) invoke(r *http.Request, p authorization.Principal) (int, any, erro
 	if err := schema.Validate(s, input); err != nil {
 		return 0, nil, transport.Fail(http.StatusUnprocessableEntity, "INVALID_INPUT", err.Error())
 	}
+	// D23: the files the input names must be the member's own, in this workspace
+	var attached []workspace.MemberFile
+	refs := schema.FileRefs(contract.Input, input)
+	if len(refs) > maxAttachments {
+		return 0, nil, transport.Fail(http.StatusUnprocessableEntity, "INVALID_INPUT", fmt.Sprintf("at most %d files can be attached", maxAttachments))
+	}
+	for _, ref := range refs {
+		f, _, err := a.Store.GetFile(r.Context(), p.Tenant, m.Workspace.ID, p.Subject, ref, false)
+		if err != nil {
+			return 0, nil, transport.Fail(http.StatusUnprocessableEntity, "INVALID_INPUT", "file "+ref+" is not one of your files in this workspace")
+		}
+		attached = append(attached, *f)
+	}
 	if in.ThreadID != "" && !threadIDRE.MatchString(in.ThreadID) {
 		return 0, nil, transport.Fail(http.StatusUnprocessableEntity, "INVALID", "threadId must be 1-64 characters of letters, digits, '_', '-' or '.'")
 	}
@@ -147,7 +164,7 @@ func (a *API) invoke(r *http.Request, p authorization.Principal) (int, any, erro
 		a.Dispatcher = &dispatch.Dispatcher{}
 	}
 	result, f := a.Dispatcher.Dispatch(r.Context(), dispatch.Request{InvocationID: v.ID, Principal: p, Workspace: m.Workspace, App: inst.App, AppVersion: inst.Version,
-		Action: *contract, Input: input, Item: item, Context: wctx})
+		Action: *contract, Input: input, Item: item, Context: wctx, Files: attached, FileFields: schema.FileFields(contract.Input)})
 	if f != nil {
 		v.Status, v.Error = workspace.InvocationFailed, &workspace.Problem{Code: f.Code, Message: f.Message}
 	} else {

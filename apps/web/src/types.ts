@@ -24,4 +24,6 @@ export interface Release { name: string; version: string; digest: string; status
 export interface InstallationRow { installationId: string; app: string; version: string; config: Record<string, unknown>; revision: number; releaseStatus: 'published' | 'revoked' }
 export interface AuditEvent { id: number; at: string; subject: string; action: string; resourceId: string | null; detail: unknown }
 export interface Conversation { threadId: string; app: string; action: string; agent: string; runs: number; firstAt: string; lastAt: string; lastRunId: string }
+/** a member's file (D23; contract MemberFile): uploaded, or delivered by a run (source run:<runId>) */
+export interface MemberFile { id: string; workspace: string; name: string; mediaType: string; size: number; sha256: string; source: string; sensitivity: string; createdAt: string; expiresAt: string }
 export interface MemoryItem { id: string; content: string; createdAt: string; validUntil?: string; source?: string; ref?: string; tags: string[] }

@@ -74,7 +74,7 @@ func (f *Follower) Follow(r Run) {
 	for {
 		ctx, cancel := context.WithDeadline(context.Background(), deadline)
 		last := out.last
-		out, err = f.read(ctx, r, last, out.text)
+		out, err = f.read(ctx, r, last, out.text, out.files)
 		cancel()
 		if err != nil || out.waiting == nil {
 			break
@@ -100,6 +100,9 @@ func (f *Follower) Follow(r Run) {
 		if summary == "" {
 			summary = "The run finished without a text answer."
 		}
+	}
+	if len(out.files) > 0 { // the files themselves are in the conversation and among the member's files
+		summary = "Files delivered: " + strings.Join(out.files, ", ") + "\n\n" + summary
 	}
 	f.put(r, title, summary, nil)
 }
@@ -172,6 +175,7 @@ type outcome struct {
 	failed  bool
 	message string
 	text    string
+	files   []string    // names of the files the run delivered (idp.host/file.delivered, D23)
 	waiting []interrupt // non-nil: the run stopped for a decision (RUN_FINISHED with an interrupt outcome)
 	last    int64       // the id of the last event read
 }
@@ -209,7 +213,7 @@ func interrupted(raw json.RawMessage) []interrupt {
 
 // read streams GET /v1/runs/{id}/events after event id after (0: from the start) and collects the
 // last assistant message, starting from text, the last one read before.
-func (f *Follower) read(ctx context.Context, r Run, after int64, text string) (outcome, error) {
+func (f *Follower) read(ctx context.Context, r Run, after int64, text string, files []string) (outcome, error) {
 	u := strings.TrimRight(f.Endpoint, "/") + "/v1/runs/" + url.PathEscape(r.RunID) + "/events"
 	if after > 0 {
 		u += "?after=" + strconv.FormatInt(after, 10)
@@ -237,7 +241,7 @@ func (f *Follower) read(ctx context.Context, r Run, after int64, text string) (o
 	var data []string
 	var current strings.Builder
 	var id int64
-	out := outcome{text: text, last: after}
+	out := outcome{text: text, last: after, files: files}
 	for sc.Scan() {
 		line := strings.TrimSuffix(sc.Text(), "\r")
 		if strings.HasPrefix(line, "data:") {
@@ -262,6 +266,10 @@ func (f *Follower) read(ctx context.Context, r Run, after int64, text string) (o
 			Message string          `json:"message"`
 			Code    string          `json:"code"`
 			Outcome json.RawMessage `json:"outcome"`
+			Name    string          `json:"name"`
+			Value   struct {
+				Name string `json:"name"`
+			} `json:"value"`
 		}
 		raw := strings.Join(data, "\n")
 		data = nil
@@ -276,6 +284,10 @@ func (f *Follower) read(ctx context.Context, r Run, after int64, text string) (o
 		case "TEXT_MESSAGE_END":
 			if t := strings.TrimSpace(current.String()); t != "" {
 				out.text = t
+			}
+		case "CUSTOM":
+			if ev.Name == "idp.host/file.delivered" && ev.Value.Name != "" {
+				out.files = append(out.files, ev.Value.Name)
 			}
 		case "RUN_FINISHED":
 			out.waiting = interrupted(ev.Outcome)

@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { FormEvent, KeyboardEvent } from 'react';
+import type { ChangeEvent, FormEvent, KeyboardEvent } from 'react';
 import type { Api } from './api.ts';
 import { friendly, runFailure } from './errors.ts';
 import { launchable } from './Launcher.tsx';
 import { Markdown } from './agent/markdown.tsx';
-import { applyEvent, assistantText, isTerminal, newAssistantTurn, pendingConfirmations, turnsFromMessages } from './agent/events.ts';
+import { applyEvent, assistantText, isTerminal, newAssistantTurn, pendingConfirmations, turnsFromMessages, withRunFiles } from './agent/events.ts';
 import type { AssistantTurn, Block, RunStatus, ToolStep, Turn } from './agent/events.ts';
-import type { ActionContract, Conversation, InstalledApp, Workspace } from './types.ts';
+import type { ActionContract, Conversation, InstalledApp, MemberFile, Workspace } from './types.ts';
 
 // Conversations with the agents (ADR-0001 D22): a member talks to an agent an installed app offers
 // (a host.run action that takes a message), sees the run as it happens - the words as they stream, each
@@ -20,13 +20,32 @@ export interface ChatAgent {
   contract: ActionContract;
   agent: string;
   title: string;
+  /** the input field that takes the member's files (format idp-file, D23), and whether it takes several */
+  files?: { field: string; multi: boolean };
 }
 
 /** the agents a member can talk to: host.run actions whose input is a message */
 export function chatAgents(apps: InstalledApp[], roles: string[] | null): ChatAgent[] {
   return apps.flatMap((app) => launchable(app, roles)
     .filter((c) => c.target.kind === 'host.run' && takesMessage(c.input))
-    .map((c) => ({ key: `${app.manifest.name}/${c.name}`, app, contract: c, agent: c.target.agent ?? '', title: `${app.manifest.title} · ${c.title}` })));
+    .map((c) => ({ key: `${app.manifest.name}/${c.name}`, app, contract: c, agent: c.target.agent ?? '', title: `${app.manifest.title} · ${c.title}`, files: fileField(c.input) })));
+}
+
+/** the top-level input property of format idp-file (or an array of them) */
+export function fileField(schema: Record<string, unknown>): { field: string; multi: boolean } | undefined {
+  const props = (schema.properties ?? {}) as Record<string, { type?: string; format?: string; items?: { format?: string } }>;
+  for (const [field, p] of Object.entries(props).sort(([a], [b]) => a.localeCompare(b))) {
+    if (p.format === 'idp-file') return { field, multi: false };
+    if (p.type === 'array' && p.items?.format === 'idp-file') return { field, multi: true };
+  }
+  return undefined;
+}
+
+/** the types the workspace keeps (its files package decides; this only narrows the picker) */
+export const ACCEPTED_FILES = '.docx,.xlsx,.pptx,.pdf,.png,.jpg,.jpeg,.csv,.txt,.md';
+
+export function fileSize(n: number): string {
+  return n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`;
 }
 
 function takesMessage(schema: Record<string, unknown>): boolean {
@@ -60,10 +79,13 @@ export function Conversations({ api, ws, apps, notify, confirm, open }: Conversa
   const [loading, setLoading] = useState(false);
   const [sideOpen, setSideOpen] = useState(false);
   const [draft, setDraft] = useState('');
+  const [attached, setAttached] = useState<MemberFile[]>([]);
+  const [uploading, setUploading] = useState(false);
   const follow = useRef<AbortController | null>(null);
   const resume = useRef<(() => void) | null>(null);
   const skipLoad = useRef<string | null>(null);
   const turnsRef = useRef<Turn[]>([]);
+  const shownAgentRef = useRef<ChatAgent | null>(null);
   turnsRef.current = turns;
 
   const agents = useMemo(() => chatAgents(apps, roles ?? null), [apps, roles]);
@@ -172,6 +194,9 @@ export function Conversations({ api, ws, apps, notify, confirm, open }: Conversa
           return;
         }
         setTurns(ts);
+        // D23: the files the runs delivered, from the member's files
+        const delivered = await api.files(ws.name).catch(() => [] as MemberFile[]);
+        if (on && delivered.length) setTurns((cur) => withRunFiles(cur, delivered));
       } catch (e) {
         if (on) notify(friendly(e, '读取对话失败'), 'error');
       } finally {
@@ -184,16 +209,19 @@ export function Conversations({ api, ws, apps, notify, confirm, open }: Conversa
 
   // The agent of the conversation that is open owns its idp-host thread; a message always goes to it, never to
   // whatever the picker happens to show (idp-host refuses a run in a thread of another agent, 409 CONFLICT).
-  const send = async (agent: ChatAgent | null, text: string) => {
+  const send = async (agent: ChatAgent | null, text: string, files: MemberFile[] = []) => {
     if (!agent || busy) return;
     const question = text.trim();
     if (!question) return;
     setDraft('');
+    setAttached([]);
+    const input: Record<string, unknown> = { message: question };
+    if (agent.files && files.length) input[agent.files.field] = agent.files.multi ? files.map((f) => f.id) : files[0].id;
     const index = turnsRef.current.length + 1;
     const pending = newAssistantTurn('', 'queued');
-    setTurns((ts) => [...ts, { kind: 'user', id: `local-${Date.now()}`, text: question }, pending]);
+    setTurns((ts) => [...ts, { kind: 'user', id: `local-${Date.now()}`, text: question, files: files.map((f) => f.name) }, pending]);
     try {
-      const inv = await api.invoke(ws.name, { app: agent.app.manifest.name, action: agent.contract.name, input: { message: question }, ...(threadId ? { threadId } : {}) });
+      const inv = await api.invoke(ws.name, { app: agent.app.manifest.name, action: agent.contract.name, input, ...(threadId ? { threadId } : {}) });
       const res = (inv.result ?? {}) as { id?: string; threadId?: string };
       if (inv.status !== 'succeeded' || !res.id) {
         const message = inv.error ? friendly(Object.assign(new Error(inv.error.message), { code: inv.error.code })) : '没有拿到运行的编号';
@@ -242,6 +270,40 @@ export function Conversations({ api, ws, apps, notify, confirm, open }: Conversa
     if (prev?.kind === 'user') void send(agent, prev.text);
   };
 
+  const attach = async (list: FileList | null) => {
+    if (!list || !shownAgentRef.current?.files) return;
+    const max = shownAgentRef.current.files.multi ? 10 : 1;
+    setUploading(true);
+    try {
+      for (const file of Array.from(list)) {
+        try {
+          const f = await api.uploadFile(ws.name, file, file.name);
+          setAttached((cur) => (max === 1 ? [f] : [...cur, f].slice(-max)));
+        } catch (e) {
+          notify(friendly(e, `上传 ${file.name} 失败`), 'error');
+        }
+      }
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const download = async (ref: string, name: string) => {
+    try {
+      const blob = await api.fileContent(ws.name, ref);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (e) {
+      notify(friendly(e, '下载失败'), 'error');
+    }
+  };
+
   const newConversation = () => { stopFollowing(); setThreadId(null); setTurns([]); setSideOpen(false); };
   const select = (c: Conversation) => {
     const key = `${c.app}/${c.action}`;
@@ -256,6 +318,7 @@ export function Conversations({ api, ws, apps, notify, confirm, open }: Conversa
   // uninstalled or revoked - and then there is nothing to send to), or the picked one for a new conversation
   const current = list.find((c) => c.threadId === threadId);
   const shownAgent = current ? agents.find((a) => a.key === `${current.app}/${current.action}`) ?? null : agent;
+  shownAgentRef.current = shownAgent;
   return (
     <div className={`chat ${sideOpen ? 'side-open' : ''}`}>
       <aside className="chat-side" aria-label="对话列表">
@@ -298,18 +361,26 @@ export function Conversations({ api, ws, apps, notify, confirm, open }: Conversa
             </div>
           )}
           {turns.map((t, i) => (t.kind === 'user'
-            ? <div key={`u${i}`} className="turn user"><div className="bubble">{t.text}</div></div>
-            : <AssistantView key={`a${i}`} turn={t} onDecide={(call, d) => decide(t, call, d)} onRetry={() => retry(i, shownAgent)} onCancel={() => cancel(t)} />))}
+            ? <div key={`u${i}`} className="turn user"><div className="bubble">{t.text}{t.files && t.files.length > 0 && <div className="attached">{t.files.map((n) => <span key={n} className="file-chip">📎 {n}</span>)}</div>}</div></div>
+            : <AssistantView key={`a${i}`} turn={t} onDecide={(call, d) => decide(t, call, d)} onRetry={() => retry(i, shownAgent)} onCancel={() => cancel(t)} onDownload={download} />))}
           {!loading && current && !shownAgent && <p className="error" role="alert">这个对话的智能体（{current.app} / {current.action}）已不在本工作空间提供，无法在这里继续；请开一个新对话。</p>}
         </div>
-        <Composer agent={shownAgent} disabled={busy || !shownAgent} draft={draft} setDraft={setDraft} onSend={(text) => send(shownAgent, text)} />
+        <Composer agent={shownAgent} disabled={busy || !shownAgent || uploading} draft={draft} setDraft={setDraft} onSend={(text) => send(shownAgent, text, attached)}
+          attached={attached} uploading={uploading} onAttach={attach} onDetach={(id) => setAttached((cur) => cur.filter((f) => f.id !== id))} />
       </section>
     </div>
   );
 }
 
-function Composer({ agent, disabled, draft, setDraft, onSend }: { agent: ChatAgent | null; disabled: boolean; draft: string; setDraft(v: string): void; onSend(text: string): Promise<void> }) {
+interface ComposerProps {
+  agent: ChatAgent | null; disabled: boolean; draft: string; setDraft(v: string): void; onSend(text: string): Promise<void>;
+  attached?: MemberFile[]; uploading?: boolean; onAttach?(files: FileList | null): void; onDetach?(id: string): void;
+}
+
+function Composer({ agent, disabled, draft, setDraft, onSend, attached = [], uploading = false, onAttach, onDetach }: ComposerProps) {
   const ref = useRef<HTMLTextAreaElement>(null);
+  const picker = useRef<HTMLInputElement>(null);
+  const pick = (e: ChangeEvent<HTMLInputElement>) => { onAttach?.(e.target.files); e.target.value = ''; };
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -322,6 +393,20 @@ function Composer({ agent, disabled, draft, setDraft, onSend }: { agent: ChatAge
   };
   return (
     <form className="composer" onSubmit={submit}>
+      {attached.length > 0 && (
+        <div className="attached" aria-label="附件">
+          {attached.map((f) => (
+            <span key={f.id} className="file-chip">📎 {f.name} <small className="muted">{fileSize(f.size)}</small>
+              <button type="button" className="ghost" aria-label={`移除 ${f.name}`} onClick={() => onDetach?.(f.id)}>×</button></span>
+          ))}
+        </div>
+      )}
+      {agent?.files && (
+        <>
+          <input ref={picker} type="file" hidden accept={ACCEPTED_FILES} multiple={agent.files.multi} onChange={pick} aria-label="选择文件" />
+          <button type="button" className="secondary attach" disabled={disabled || uploading} onClick={() => picker.current?.click()} aria-label="附加文件">{uploading ? '上传中…' : '📎'}</button>
+        </>
+      )}
       <textarea ref={ref} rows={1} aria-label="消息" placeholder={agent ? `问 ${agent.contract.title}…` : ''} value={draft} disabled={!agent}
         onChange={(e) => setDraft(e.target.value)} onKeyDown={key} />
       <button type="submit" disabled={disabled || !draft.trim()} aria-label="发送">{disabled ? '运行中…' : '发送'}</button>
@@ -330,12 +415,12 @@ function Composer({ agent, disabled, draft, setDraft, onSend }: { agent: ChatAge
   );
 }
 
-function AssistantView({ turn, onDecide, onRetry, onCancel }: { turn: AssistantTurn; onDecide(call: ToolStep, d: 'confirm' | 'reject'): void; onRetry(): void; onCancel(): void }) {
+function AssistantView({ turn, onDecide, onRetry, onCancel, onDownload }: { turn: AssistantTurn; onDecide(call: ToolStep, d: 'confirm' | 'reject'): void; onRetry(): void; onCancel(): void; onDownload?(ref: string, name: string): void }) {
   const pending = pendingConfirmations(turn);
   return (
     <div className={`turn assistant status-${turn.status}`}>
       <div className="answer">
-        {turn.blocks.map((b, i) => <BlockView key={i} block={b} streaming={turn.status === 'running' && i === turn.blocks.length - 1} onDecide={onDecide} />)}
+        {turn.blocks.map((b, i) => <BlockView key={i} block={b} streaming={turn.status === 'running' && i === turn.blocks.length - 1} onDecide={onDecide} onDownload={onDownload} />)}
         {turn.status === 'queued' && <p className="muted thinking">正在排队…</p>}
         {turn.status === 'running' && turn.blocks.length === 0 && <p className="muted thinking">思考中…</p>}
         {turn.status === 'awaiting' && pending.length === 0 && <p className="muted">智能体在等待一个工作台里无法给出的输入。</p>}
@@ -370,7 +455,7 @@ function RunFooter({ turn, onCancel }: { turn: AssistantTurn; onCancel(): void }
   );
 }
 
-function BlockView({ block, streaming, onDecide }: { block: Block; streaming: boolean; onDecide(call: ToolStep, d: 'confirm' | 'reject'): void }) {
+function BlockView({ block, streaming, onDecide, onDownload }: { block: Block; streaming: boolean; onDecide(call: ToolStep, d: 'confirm' | 'reject'): void; onDownload?(ref: string, name: string): void }) {
   switch (block.kind) {
     case 'text':
       return <div className={`text ${!block.done && streaming ? 'streaming' : ''}`}><Markdown text={block.text} /></div>;
@@ -382,6 +467,13 @@ function BlockView({ block, streaming, onDecide }: { block: Block; streaming: bo
       return <div className="context-chip" title={block.packageId}>依据了 {block.items ?? 0} 条企业知识{block.tokens ? ` · ${block.tokens} tokens` : ''}</div>;
     case 'notice':
       return <div className={`notice ${block.level}`}>{block.text}</div>;
+    case 'file':
+      return (
+        <div className="delivered-file">
+          <span className="file-chip">📄 {block.name} <small className="muted">{fileSize(block.size)}</small></span>
+          <button type="button" className="secondary" onClick={() => onDownload?.(block.ref, block.name)}>下载</button>
+        </div>
+      );
   }
 }
 

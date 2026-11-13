@@ -28,7 +28,7 @@ var update = flag.Bool("update", false, "regenerate api/contracts/examples.json 
 
 const (
 	contractDir = "../../api/contracts"
-	contractID  = "urn:idp:telos:workspace:1.1.0"
+	contractID  = "urn:idp:telos:workspace:1.2.0"
 )
 
 type noLoader struct{}
@@ -82,7 +82,7 @@ func (k *contract) schema(def string) *jsonschema.Schema {
 	return s
 }
 
-var roots = map[string]bool{"Workspace": true, "AppManifest": true, "AppRelease": true, "Installation": true, "InboxItem": true, "WorkContext": true, "Invocation": true, "BridgeMessage": true, "Problem": true}
+var roots = map[string]bool{"Workspace": true, "AppManifest": true, "AppRelease": true, "Installation": true, "InboxItem": true, "WorkContext": true, "Invocation": true, "BridgeMessage": true, "Problem": true, "MemberFile": true}
 
 func (k *contract) validate(def string, raw []byte) error {
 	inst, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
@@ -191,7 +191,12 @@ func buildExamples(t *testing.T) []byte {
 	add("BridgeMessage", workspace.BridgeMessage{Protocol: workspace.BridgeProtocol, ID: "4", Type: workspace.BridgeResponse, Result: json.RawMessage(`{"expiresAt":"2026-11-04T09:05:00Z","token":"eyJhbGciOiJFUzI1NiJ9.e30.c2ln"}`)})
 	add("BridgeMessage", workspace.BridgeMessage{Protocol: workspace.BridgeProtocol, Type: workspace.BridgeEvent, Event: "context.changed", Data: json.RawMessage(`{"entities":[{"id":"1002","type":"order"}],"version":4}`)})
 	add("Problem", workspace.Problem{Code: "ACTION_NOT_OFFERED", Message: "the item does not offer orders/order.hold"})
-	f := examplesFile{Description: "idp.telos.workspace 1.1.0 的示例：每一个都是 idp-workspace 的 Go 值序列化的结果（API 返回或应用桥发送的形状）。", GeneratedBy: "go test ./internal/workspace -run TestContract -update", Examples: xs}
+	// D23: a file bob uploaded, and the file a run delivered to him
+	add("MemberFile", workspace.MemberFile{ID: "6f1c2a9e-8d4b-4c3a-9e21-0b7d5f3a8c41", Workspace: "us-ops", Name: "报价单.docx", MediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		Size: 48213, SHA256: strings.Repeat("3b", 32), Source: workspace.FileSourceUpload, Sensitivity: "internal", CreatedAt: at, ExpiresAt: at.Add(30 * 24 * time.Hour)})
+	add("MemberFile", workspace.MemberFile{ID: "7a2d3b0f-9e5c-4d4b-8f32-1c8e6a4b9d52", Workspace: "us-ops", Name: "报价单-修订.docx", MediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		Size: 49102, SHA256: strings.Repeat("4c", 32), Source: "run:ws_7f3a1c2e5b6d4c8e9f0123456789abcd", Sensitivity: "internal", CreatedAt: at.Add(time.Hour), ExpiresAt: at.Add(30*24*time.Hour + time.Hour)})
+	f := examplesFile{Description: "idp.telos.workspace 1.2.0 的示例：每一个都是 idp-workspace 的 Go 值序列化的结果（API 返回或应用桥发送的形状）。", GeneratedBy: "go test ./internal/workspace -run TestContract -update", Examples: xs}
 	raw, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -252,7 +257,7 @@ func TestContractFieldsMatchGo(t *testing.T) {
 		"ActionContract": workspace.ActionContract{}, "Target": workspace.Target{}, "Revocation": workspace.Revocation{}, "AppRelease": workspace.Release{},
 		"Installation": workspace.Installation{}, "Ref": workspace.Ref{}, "Assignees": workspace.Assignees{}, "ItemAction": workspace.ItemAction{},
 		"Resolution": workspace.Resolution{}, "Entity": workspace.Entity{}, "InboxItem": workspace.InboxItem{}, "WorkContext": workspace.WorkContext{},
-		"Problem": workspace.Problem{}, "Invocation": workspace.Invocation{}, "BridgeMessage": workspace.BridgeMessage{}}
+		"Problem": workspace.Problem{}, "Invocation": workspace.Invocation{}, "BridgeMessage": workspace.BridgeMessage{}, "MemberFile": workspace.MemberFile{}}
 	for def, zero := range closed {
 		d, ok := defs[def].(map[string]any)
 		if !ok {

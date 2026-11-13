@@ -138,3 +138,23 @@ func (s *Signer) JWKS() []byte {
 
 // Public returns the verification key (tests, Go app backends).
 func (s *Signer) Public() *ecdsa.PublicKey { return &s.key.PublicKey }
+
+// Sign signs other claims with the workspace's key (file tickets, ADR-0001 D23); the caller sets iss, aud and exp.
+func (s *Signer) Sign(claims jwt.MapClaims) (string, error) {
+	t := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
+	t.Header["kid"] = s.kid
+	return t.SignedString(s.key)
+}
+
+// Verify checks a token this signer issued for audience: ES256 with this key, issuer, audience, expiry.
+func (s *Signer) Verify(token, audience string) (jwt.MapClaims, error) {
+	claims := jwt.MapClaims{}
+	opts := []jwt.ParserOption{jwt.WithValidMethods([]string{"ES256"}), jwt.WithIssuer(s.Issuer), jwt.WithAudience(audience), jwt.WithExpirationRequired(), jwt.WithLeeway(5 * time.Second)}
+	if s.Now != nil {
+		opts = append(opts, jwt.WithTimeFunc(s.Now))
+	}
+	if _, err := jwt.ParseWithClaims(token, claims, func(*jwt.Token) (any, error) { return &s.key.PublicKey, nil }, opts...); err != nil {
+		return nil, err
+	}
+	return claims, nil
+}

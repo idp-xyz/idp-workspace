@@ -25,6 +25,10 @@
 //	IDP_IDENTITY_CA_FILE         extra trusted CAs for the JWKS endpoint
 //	IDP_METRICS_LISTEN           serve Prometheus metrics (/metrics) on this address; off when unset
 //	IDP_LOG_LEVEL                debug | info | warn | error
+//	IDP_WORKSPACE_INTERNAL_LISTEN  the internal file endpoint for idp-sandbox (ADR-0001 D23), e.g. 0.0.0.0:8561; set (with
+//	                             app tokens' IDP_WORKSPACE_PUBLIC_URL), host.run actions get file tickets; reachable only from the sandbox
+//	IDP_WORKSPACE_FILE_MB (25) IDP_WORKSPACE_FILE_QUOTA_MB (200) IDP_WORKSPACE_FILE_QUOTA_FILES (500)
+//	IDP_WORKSPACE_FILE_RETENTION_DAYS (30) IDP_WORKSPACE_FILE_TICKET_MIN (60) IDP_WORKSPACE_RUN_FILES (10)   members' files
 //	OTEL_EXPORTER_OTLP_ENDPOINT ...   OTLP/HTTP trace export (off without an endpoint)
 package main
 
@@ -36,6 +40,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -46,6 +51,7 @@ import (
 	"idp-workspace/internal/apptoken"
 	"idp-workspace/internal/config"
 	"idp-workspace/internal/dispatch"
+	"idp-workspace/internal/files"
 	"idp-workspace/internal/observability"
 	"idp-workspace/internal/runs"
 	"idp-workspace/internal/transport"
@@ -58,6 +64,18 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func envInt(key string, def int64) (int64, error) {
+	v := env(key, "")
+	if v == "" {
+		return def, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", key)
+	}
+	return n, nil
 }
 
 func secret(key string) string {
@@ -245,6 +263,44 @@ func serve(log *slog.Logger) error {
 			return errors.New("IDP_WORKSPACE_PUBLIC_URL needs IDP_WORKSPACE_SIGNING_KEY_FILE")
 		}
 	}
+	// ADR-0001 D23: members' files, and the tickets runs get for them
+	var fileMB, quotaMB, quotaFiles, days, ticketMin, runFiles int64
+	for _, x := range []struct {
+		dst *int64
+		key string
+		def int64
+	}{{&fileMB, "IDP_WORKSPACE_FILE_MB", 25}, {&quotaMB, "IDP_WORKSPACE_FILE_QUOTA_MB", 200}, {&quotaFiles, "IDP_WORKSPACE_FILE_QUOTA_FILES", 500},
+		{&days, "IDP_WORKSPACE_FILE_RETENTION_DAYS", 30}, {&ticketMin, "IDP_WORKSPACE_FILE_TICKET_MIN", 60}, {&runFiles, "IDP_WORKSPACE_RUN_FILES", 10}} {
+		if *x.dst, err = envInt(x.key, x.def); err != nil {
+			return err
+		}
+	}
+	a.Files = api.FileConfig{MaxBytes: fileMB << 20, QuotaBytes: quotaMB << 20, QuotaFiles: int(quotaFiles), Retention: time.Duration(days) * 24 * time.Hour, RunFiles: int(runFiles)}
+	var internal *http.Server
+	if addr := env("IDP_WORKSPACE_INTERNAL_LISTEN", ""); addr != "" {
+		if a.AppTokens == nil {
+			return errors.New("IDP_WORKSPACE_INTERNAL_LISTEN needs app tokens (IDP_WORKSPACE_PUBLIC_URL): file tickets are signed with their key")
+		}
+		a.Files.Tickets = &files.Ticketer{Signer: a.AppTokens, TTL: time.Duration(ticketMin) * time.Minute}
+		d.Tickets, d.DeliverFiles, d.DeliverBytes = a.Files.Tickets, int(runFiles), fileMB<<20
+		internal = &http.Server{Addr: addr, Handler: a.InternalHandler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 120 * time.Second, WriteTimeout: 120 * time.Second}
+	}
+	go func() { // expired files go
+		t := time.NewTicker(time.Hour)
+		defer t.Stop()
+		for {
+			if n, err := store.PurgeExpiredFiles(ctx); err != nil {
+				log.Warn("purging expired files failed", "error", err)
+			} else if n > 0 {
+				log.Info("purged expired files", "n", n)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+			}
+		}
+	}()
 	if d.Host != nil { // ADR-0001 D11: results of host.run actions come back into the inbox
 		a.Runs = &runs.Follower{Store: store, Endpoint: d.Host.Endpoint, HTTP: d.Host.HTTP, Log: log}
 	}
@@ -255,7 +311,11 @@ func serve(log *slog.Logger) error {
 			return fmt.Errorf("TLS: %w", err)
 		}
 	}
-	errc := make(chan error, 1)
+	errc := make(chan error, 2)
+	if internal != nil {
+		go func() { errc <- internal.ListenAndServe() }()
+		defer internal.Close()
+	}
 	go func() {
 		if srv.TLSConfig != nil {
 			errc <- srv.ListenAndServeTLS("", "")
@@ -263,7 +323,7 @@ func serve(log *slog.Logger) error {
 			errc <- srv.ListenAndServe()
 		}
 	}()
-	log.Info("idp-workspace listening", "addr", srv.Addr, "devMode", dev, "tls", srv.TLSConfig != nil, "host", d.Host != nil, "eer", d.EER != nil, "cmi", cmi != nil, "webhooks", d.WebhookSecret != nil, "web", a.WebDir != "", "oidc", a.OIDC != nil, "appTokens", a.AppTokens != nil)
+	log.Info("idp-workspace listening", "addr", srv.Addr, "devMode", dev, "tls", srv.TLSConfig != nil, "host", d.Host != nil, "eer", d.EER != nil, "cmi", cmi != nil, "webhooks", d.WebhookSecret != nil, "web", a.WebDir != "", "oidc", a.OIDC != nil, "appTokens", a.AppTokens != nil, "fileTickets", internal != nil)
 	select {
 	case err := <-errc:
 		return err

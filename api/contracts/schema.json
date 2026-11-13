@@ -1,8 +1,8 @@
 {
  "$schema": "https://json-schema.org/draft/2020-12/schema",
- "$id": "urn:idp:telos:workspace:1.1.0",
- "title": "idp.telos.workspace 1.1.0",
- "description": "idp-workspace（企业工作入口）对外发布的契约（ADR-0001 D8）：Workspace、AppManifest（含 ActionContract、Target）、AppRelease、Installation、InboxItem、WorkContext、Invocation、BridgeMessage（应用桥 idp.bridge/v1）与 Problem。生产者是 idp-workspace，权威副本在 idp-workspace/api/contracts/，由 go test ./internal/workspace -run TestContract 保证与实现一致；idp-contracts 中的副本只能与之逐字节相同。JSON Schema 只描述形状与可本地判定的规则；成员资格、能力授予、动作角色与事项可见性由服务判定。 1.1.0 相对 1.0.0 只做新增（M3，D15）：清单能力与桥方法各增 identity.token（应用向壳申请发给其后端的短期应用令牌）。",
+ "$id": "urn:idp:telos:workspace:1.2.0",
+ "title": "idp.telos.workspace 1.2.0",
+ "description": "idp-workspace（企业工作入口）对外发布的契约（ADR-0001 D8）：Workspace、AppManifest（含 ActionContract、Target）、AppRelease、Installation、InboxItem、WorkContext、Invocation、BridgeMessage（应用桥 idp.bridge/v1）与 Problem。1.2.0 新增：MemberFile（成员的文件，D23）；动作输入 Schema 可用 format idp-file 声明接收成员文件的字段（字符串或其数组，值为文件 id）。生产者是 idp-workspace，权威副本在 idp-workspace/api/contracts/，由 go test ./internal/workspace -run TestContract 保证与实现一致；idp-contracts 中的副本只能与之逐字节相同。JSON Schema 只描述形状与可本地判定的规则；成员资格、能力授予、动作角色与事项可见性由服务判定。 1.1.0 相对 1.0.0 只做新增（M3，D15）：清单能力与桥方法各增 identity.token（应用向壳申请发给其后端的短期应用令牌）。",
  "oneOf": [
   {
    "$ref": "#/$defs/Workspace"
@@ -30,6 +30,9 @@
   },
   {
    "$ref": "#/$defs/Problem"
+  },
+  {
+   "$ref": "#/$defs/MemberFile"
   }
  ],
  "$defs": {
@@ -1126,6 +1129,85 @@
      }
     }
    ]
+  },
+  "MemberFile": {
+   "title": "MemberFile",
+   "description": "1.2.0：成员的一个文件（D23；平台 ADR-0002 F1）：成员上传的（source upload），或某次运行交付给成员的（source run:<runId>）。只属于它的所有者（租户内的一个主体）；API 只给所有者看、下载与删除，下载是附件（Content-Disposition: attachment，不在壳里渲染）。内容不在这个对象里。到 expiresAt 后删除。",
+   "x-idp-telos-owner": "idp.telos.workspace",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "id",
+    "workspace",
+    "name",
+    "mediaType",
+    "size",
+    "sha256",
+    "source",
+    "sensitivity",
+    "createdAt",
+    "expiresAt"
+   ],
+   "properties": {
+    "id": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "workspace": {
+     "type": "string",
+     "pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$",
+     "description": "文件所在的工作空间（名称）"
+    },
+    "name": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 255,
+     "description": "一个路径元素：不含 / \\ : * ? \" < > | 与控制字符"
+    },
+    "mediaType": {
+     "enum": [
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "application/pdf",
+      "image/png",
+      "image/jpeg",
+      "text/csv",
+      "text/plain",
+      "text/markdown"
+     ],
+     "description": "由扩展名决定，内容须与之相符；带宏的格式不接受"
+    },
+    "size": {
+     "type": "integer",
+     "minimum": 1
+    },
+    "sha256": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{64}$"
+    },
+    "source": {
+     "type": "string",
+     "pattern": "^(upload|run:[A-Za-z0-9_.:-]{1,128})$"
+    },
+    "sensitivity": {
+     "enum": [
+      "public",
+      "internal",
+      "confidential",
+      "restricted"
+     ],
+     "description": "缺省 internal（平台 ADR-0002 F8 的上限尚未实施）"
+    },
+    "createdAt": {
+     "type": "string",
+     "format": "date-time"
+    },
+    "expiresAt": {
+     "type": "string",
+     "format": "date-time"
+    }
+   }
   }
  }
 }

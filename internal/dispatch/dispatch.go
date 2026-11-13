@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"idp-workspace/internal/authorization"
+	"idp-workspace/internal/files"
 	"idp-workspace/internal/workspace"
 )
 
@@ -74,6 +75,11 @@ type Dispatcher struct {
 	WebhookSecret []byte
 	WebhookHTTP   *http.Client
 	Now           func() time.Time
+	// Tickets signs a host.run's file tickets (D23): read tickets for the member's attached files and a write ticket that
+	// lets the run deliver up to DeliverFiles files of DeliverBytes each. nil = runs get no files.
+	Tickets      *files.Ticketer
+	DeliverFiles int
+	DeliverBytes int64
 }
 
 // Request is one action to forward.
@@ -87,6 +93,9 @@ type Request struct {
 	Input        json.RawMessage // validated against the action's input schema
 	Item         *workspace.InboxItem
 	Context      *workspace.WorkContext
+	// Files are the member's files the input names (D23), in order; FileFields the input fields that name them.
+	Files      []workspace.MemberFile
+	FileFields map[string]bool
 }
 
 // Failure is a dispatch that did not succeed: a stable code and a safe message.
@@ -140,11 +149,21 @@ func (d *Dispatcher) startRun(ctx context.Context, r Request) (json.RawMessage, 
 	message := string(r.Input)
 	var in map[string]any
 	if json.Unmarshal(r.Input, &in) == nil {
-		if m, ok := in["message"].(string); ok && len(in) == 1 {
-			message = m
+		if m, ok := in["message"].(string); ok {
+			only := true // the message, and at most the files it comes with (D23)
+			for k := range in {
+				only = only && (k == "message" || r.FileFields[k])
+			}
+			if only {
+				message = m
+			}
 		}
 	}
 	runID := "ws_" + strings.ReplaceAll(r.InvocationID, "-", "")
+	props, f := d.fileOptions(r, runID)
+	if f != nil {
+		return nil, f
+	}
 	ctxEntries := []map[string]string{{"description": "idp.workspace/action", "value": r.App + "/" + r.Action.Name + " in workspace " + r.Workspace.Name}}
 	threadID := ""
 	if r.Context != nil {
@@ -163,6 +182,9 @@ func (d *Dispatcher) startRun(ctx context.Context, r Request) (json.RawMessage, 
 		"messages": []map[string]any{{"id": "msg_" + runID, "role": "user", "content": message}},
 		"tools":    []any{}, "context": ctxEntries,
 	}
+	if props != nil {
+		body["forwardedProps"] = props
+	}
 	var out hostRun
 	status, f := d.call(ctx, d.Host, r.Principal, http.MethodPost, "/v1/agents/"+url.PathEscape(r.Action.Target.Agent)+"/runs", runID, body, &out)
 	if f != nil {
@@ -170,6 +192,48 @@ func (d *Dispatcher) startRun(ctx context.Context, r Request) (json.RawMessage, 
 	}
 	res, _ := json.Marshal(map[string]any{"system": "host", "kind": "run", "id": out.RunID, "threadId": out.ThreadID, "status": out.Status, "httpStatus": status})
 	return res, nil
+}
+
+// fileOptions are the run's file options for idp-host (idp.telos.host 1.8.0 RunOptions, D23): each attached file with a
+// read ticket, and a write ticket for what the run delivers. Without a ticketer a run gets no files, and an input that
+// attaches some is refused.
+func (d *Dispatcher) fileOptions(r Request, runID string) (map[string]any, *Failure) {
+	if d.Tickets == nil {
+		if len(r.Files) > 0 {
+			return nil, failure("TARGET_UNSUPPORTED", 0, "this workspace does not give files to agent runs")
+		}
+		return nil, nil
+	}
+	p := r.Principal
+	caller := p.TokenSubject // what idp-sandbox sees as the caller of the run's tool calls
+	if caller == "" {
+		caller = p.Subject
+	}
+	props := map[string]any{}
+	var atts []map[string]any
+	for _, f := range r.Files {
+		t, err := d.Tickets.Read(p.Tenant, caller, p.Subject, f.ID, runID)
+		if err != nil {
+			return nil, failure("INTERNAL", 0, "file ticket: %v", err)
+		}
+		atts = append(atts, map[string]any{"ref": f.ID, "name": f.Name, "mediaType": f.MediaType, "size": f.Size, "sha256": f.SHA256, "ticket": t})
+	}
+	if len(atts) > 0 {
+		props["idp.host/attachments"] = atts
+	}
+	n, size := d.DeliverFiles, d.DeliverBytes
+	if n <= 0 {
+		n = 10
+	}
+	if size <= 0 {
+		size = 25 << 20
+	}
+	w, err := d.Tickets.Write(p.Tenant, caller, p.Subject, r.Workspace.ID, runID, n, size)
+	if err != nil {
+		return nil, failure("INTERNAL", 0, "file ticket: %v", err)
+	}
+	props["idp.host/delivery"] = map[string]any{"ticket": w}
+	return props, nil
 }
 
 // eerDecision decides a T2 approval of an execution: approve -> approved, reject -> rejected. The

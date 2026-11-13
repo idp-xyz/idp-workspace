@@ -35,20 +35,27 @@ func TestRead(t *testing.T) {
 	srv := host(t, `{"type":"RUN_STARTED"}`, `{"type":"TEXT_MESSAGE_START","messageId":"m1"}`, `{"type":"TEXT_MESSAGE_CONTENT","messageId":"m1","delta":"Thinking"}`,
 		`{"type":"TEXT_MESSAGE_END","messageId":"m1"}`, `{"type":"TEXT_MESSAGE_START","messageId":"m2"}`, `{"type":"TEXT_MESSAGE_CONTENT","messageId":"m2","delta":"Order 1001 "}`,
 		`{"type":"TEXT_MESSAGE_CONTENT","messageId":"m2","delta":"waits for customs."}`, `{"type":"TEXT_MESSAGE_END","messageId":"m2"}`, `{"type":"RUN_FINISHED"}`)
-	out, err := (&Follower{Endpoint: srv.URL}).read(context.Background(), r, 0, "")
+	out, err := (&Follower{Endpoint: srv.URL}).read(context.Background(), r, 0, "", nil)
 	if err != nil || out.failed || out.waiting != nil || out.text != "Order 1001 waits for customs." || out.last != 9 {
 		t.Fatalf("%+v %v", out, err)
 	}
+	// D23: the files a run delivered are named on its item
+	files := host(t, `{"type":"RUN_STARTED"}`, `{"type":"CUSTOM","name":"idp.host/file.delivered","value":{"toolCallId":"c1","ref":"f1","name":"报价单-修订.docx","size":10}}`,
+		`{"type":"CUSTOM","name":"idp.host/model.usage","value":{"name":"not a file"}}`, `{"type":"RUN_FINISHED"}`)
+	out, err = (&Follower{Endpoint: files.URL}).read(context.Background(), r, 0, "", []string{"earlier.xlsx"})
+	if err != nil || len(out.files) != 2 || out.files[0] != "earlier.xlsx" || out.files[1] != "报价单-修订.docx" {
+		t.Fatalf("%+v %v", out, err)
+	}
 	failed := host(t, `{"type":"RUN_STARTED"}`, `{"type":"RUN_ERROR","code":"MODEL_UNAVAILABLE","message":"no provider answered"}`)
-	out, err = (&Follower{Endpoint: failed.URL}).read(context.Background(), r, 0, "")
+	out, err = (&Follower{Endpoint: failed.URL}).read(context.Background(), r, 0, "", nil)
 	if err != nil || !out.failed || out.message != "MODEL_UNAVAILABLE no provider answered" {
 		t.Fatalf("%+v %v", out, err)
 	}
 	cut := host(t, `{"type":"RUN_STARTED"}`)
-	if _, err := (&Follower{Endpoint: cut.URL}).read(context.Background(), r, 0, ""); err == nil || !strings.Contains(err.Error(), "ended before") {
+	if _, err := (&Follower{Endpoint: cut.URL}).read(context.Background(), r, 0, "", nil); err == nil || !strings.Contains(err.Error(), "ended before") {
 		t.Fatal(err)
 	}
-	if _, err := (&Follower{Endpoint: srv.URL}).read(context.Background(), Run{RunID: "run_1", Token: "other"}, 0, ""); err == nil {
+	if _, err := (&Follower{Endpoint: srv.URL}).read(context.Background(), Run{RunID: "run_1", Token: "other"}, 0, "", nil); err == nil {
 		t.Fatal("a refused stream is not an outcome")
 	}
 }
@@ -57,7 +64,7 @@ func TestReadInterrupt(t *testing.T) {
 	// idp-host's RUN_FINISHED for a tool call that waits for the owner's confirmation is not an end
 	srv := host(t, `{"type":"RUN_STARTED"}`, `{"type":"CUSTOM","name":"idp.host/confirmation.required"}`,
 		`{"type":"RUN_FINISHED","outcome":{"type":"interrupt","interrupts":[{"type":"confirmation","toolCallId":"call_1","tool":"minimal__echo","arguments":{"text":"hi"},"expiresAt":"2026-11-06T11:07:21Z"}]}}`)
-	out, err := (&Follower{Endpoint: srv.URL}).read(context.Background(), Run{RunID: "run_1", Token: "tok"}, 0, "said before")
+	out, err := (&Follower{Endpoint: srv.URL}).read(context.Background(), Run{RunID: "run_1", Token: "tok"}, 0, "said before", nil)
 	if err != nil || len(out.waiting) != 1 || out.waiting[0].Tool != "minimal__echo" || !out.waiting[0].ExpiresAt.Equal(time.Date(2026, 11, 6, 11, 7, 21, 0, time.UTC)) ||
 		out.last != 3 || out.text != "said before" {
 		t.Fatalf("%+v %v", out, err)

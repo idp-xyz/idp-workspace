@@ -108,3 +108,23 @@ describe('turnsFromMessages', () => {
     expect(second).toMatchObject({ runId: 'ws_2', status: 'failed', error: { code: 'RUN_TIMEOUT', message: 'too slow' }, blocks: [] });
   });
 });
+
+describe('delivered files (D23)', () => {
+  it('shows a file the run delivered, once, and puts the files of past runs on their turns', async () => {
+    const { withRunFiles } = await import('../src/agent/events.ts');
+    const ev = { type: 'CUSTOM', name: 'idp.host/file.delivered', value: { toolCallId: 'c4', ref: 'f-1', name: '报价单-修订.docx', size: 49102, mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' } };
+    const t = play([{ type: 'RUN_STARTED' }, ev, ev, { type: 'RUN_FINISHED' }]);
+    expect(t.blocks).toEqual([{ kind: 'file', ref: 'f-1', name: '报价单-修订.docx', size: 49102, mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }]);
+    const history = turnsFromMessages([{ id: 'u1', role: 'user', content: 'edit it' }, { id: 'a1', role: 'assistant', content: 'Done.' }], [{ runId: 'ws_9', status: 'COMPLETED' }]);
+    const files = [
+      { id: 'f-2', name: 'b.xlsx', size: 10, mediaType: 'x', source: 'run:ws_9', createdAt: '2026-11-13T02:00:00Z' },
+      { id: 'f-1', name: 'a.docx', size: 10, mediaType: 'x', source: 'run:ws_9', createdAt: '2026-11-13T01:00:00Z' },
+      { id: 'f-3', name: 'mine.docx', size: 10, mediaType: 'x', source: 'upload' },
+      { id: 'f-4', name: 'other.docx', size: 10, mediaType: 'x', source: 'run:ws_other' },
+    ];
+    const withFiles = withRunFiles(history, files);
+    const a = withFiles[1] as AssistantTurn;
+    expect(a.blocks.filter((b) => b.kind === 'file').map((b) => (b as { name: string }).name)).toEqual(['a.docx', 'b.xlsx']);
+    expect(withRunFiles(withFiles, files)).toEqual(withFiles); // no repeats
+  });
+});

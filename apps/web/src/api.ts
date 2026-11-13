@@ -1,6 +1,6 @@
 // The shell's client of the workspace API (same origin). The bearer token lives in sessionStorage
 // for the tab only; it is never given to an app frame (ADR-0001 D5).
-import type { AuditEvent, Conversation, InboxItem, InstalledApp, InstallationRow, Invocation, MemoryItem, Me, Member, Release, Workspace, WorkContext } from './types.ts';
+import type { AuditEvent, Conversation, InboxItem, InstalledApp, InstallationRow, Invocation, MemberFile, MemoryItem, Me, Member, Release, Workspace, WorkContext } from './types.ts';
 import type { AGUIEvent, HostMessage, HostRun, HostToolCall } from './agent/events.ts';
 import { sseParser } from './sse.ts';
 
@@ -98,6 +98,33 @@ export class Api {
     return this.request<Invocation>('POST', `/v1/workspaces/${encodeURIComponent(ws)}/actions/invoke`, call, { 'Idempotency-Key': key });
   }
 
+  // ---- the member's files (D23) ----
+  /** uploads a file as the member's; the server checks its type, content and size */
+  async uploadFile(ws: string, file: Blob, name: string): Promise<MemberFile> {
+    const res = await this.fetcher(`/v1/workspaces/${encodeURIComponent(ws)}/files?name=${encodeURIComponent(name)}`, {
+      method: 'POST', headers: { Authorization: `Bearer ${this.token ?? ''}`, 'Content-Type': 'application/octet-stream' }, body: file,
+    });
+    const text = await res.text();
+    let json: { error?: { code?: string; message?: string } } & Partial<MemberFile> = {};
+    try { json = text ? JSON.parse(text) : {}; } catch { /* not JSON */ }
+    if (!res.ok) throw new ApiError(res.status, json.error?.code ?? `HTTP_${res.status}`, json.error?.message ?? res.statusText);
+    return json as MemberFile;
+  }
+  files(ws: string, source = '', limit = 500) {
+    const q = new URLSearchParams({ limit: String(limit), ...(source ? { source } : {}) }).toString();
+    return this.request<{ files: MemberFile[] }>('GET', `/v1/workspaces/${encodeURIComponent(ws)}/files?${q}`).then((r) => r.files);
+  }
+  deleteFile(ws: string, id: string) { return this.request<null>('DELETE', `/v1/workspaces/${encodeURIComponent(ws)}/files/${encodeURIComponent(id)}`); }
+  /** the file's bytes (the bearer cannot go on a plain link); the caller saves them */
+  async fileContent(ws: string, id: string): Promise<Blob> {
+    const res = await this.fetcher(`/v1/workspaces/${encodeURIComponent(ws)}/files/${encodeURIComponent(id)}/content`, { headers: { Authorization: `Bearer ${this.token ?? ''}` } });
+    if (!res.ok) {
+      let err: { code?: string; message?: string } = {};
+      try { err = ((await res.json()) as { error?: typeof err }).error ?? {}; } catch { /* not a problem document */ }
+      throw new ApiError(res.status, err.code ?? `HTTP_${res.status}`, err.message ?? res.statusText);
+    }
+    return res.blob();
+  }
   // ---- conversations with the agents (D22): the member's own runs and threads, relayed to idp-host ----
   conversations(ws: string, limit = 50) {
     return this.request<{ conversations: Conversation[] }>('GET', `/v1/workspaces/${encodeURIComponent(ws)}/conversations?limit=${limit}`).then((r) => r.conversations);

@@ -257,7 +257,8 @@ func (v *Verifier) Verify(ctx context.Context, token string) (authorization.Prin
 	if v.hmac != nil {
 		method = "dev"
 	}
-	return authorization.Principal{Subject: sub, Tenant: tenant, Roles: roles, Method: method, Expires: expires, Client: azp, Actor: actor, Token: token}, nil
+	tokenSub, _ := claims["sub"].(string)
+	return authorization.Principal{Subject: sub, TokenSubject: tokenSub, Tenant: tenant, Roles: roles, Method: method, Expires: expires, Client: azp, Actor: actor, Token: token}, nil
 }
 
 // DevToken signs a development token (idp-workspace dev-token, tests).

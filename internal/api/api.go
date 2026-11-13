@@ -55,9 +55,11 @@ type API struct {
 	OIDC *ShellOIDC
 	// AppTokens signs the tokens apps' backends receive (D15); nil = identity.token unavailable.
 	AppTokens *apptoken.Signer
-	Log       *slog.Logger
-	Metrics   *observability.Metrics
-	Version   string
+	// Files keeps members' files and signs runs' tickets for them (D23).
+	Files   FileConfig
+	Log     *slog.Logger
+	Metrics *observability.Metrics
+	Version string
 
 	invocations *observability.CounterVec
 }
@@ -146,7 +148,7 @@ func (a *API) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.As(err, &pb):
 	case errors.As(err, &se):
-		status := map[string]int{"NOT_FOUND": 404, "CONFLICT": 409, "FORBIDDEN": 403, "INVALID": 422}[se.Code]
+		status := map[string]int{"NOT_FOUND": 404, "CONFLICT": 409, "FORBIDDEN": 403, "INVALID": 422, "QUOTA": 409}[se.Code]
 		if status == 0 {
 			status = 500
 		}
@@ -219,6 +221,7 @@ func (a *API) Handler() http.Handler {
 	if a.Log == nil {
 		a.Log = slog.Default()
 	}
+	a.Files.defaults()
 	if a.Metrics != nil {
 		a.invocations = a.Metrics.Counter("idp_workspace_invocations_total", "Action invocations by target kind and status.", "target", "status")
 	}
@@ -526,6 +529,7 @@ func (a *API) Handler() http.Handler {
 		return 200, map[string]any{"invocations": out}, err
 	}, member))
 	mux.Handle("POST /v1/workspaces/{ws}/actions/invoke", a.role(a.invoke, member))
+	a.fileRoutes(mux)
 	mux.HandleFunc("GET /v1/workspaces/{ws}/inbox/stream", a.inboxStream)
 
 	// ---- conversations with the agents (D22): the member's own runs and threads, relayed to idp-host ----

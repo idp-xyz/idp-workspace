@@ -428,3 +428,20 @@ func ValidEntities(es []Entity) error {
 	}
 	return nil
 }
+
+// MemberFile is a member's file as the workspace describes it (D23; contract MemberFile): never its content.
+type MemberFile struct {
+	ID          string    `json:"id"`
+	Workspace   string    `json:"workspace"` // the workspace's name
+	Name        string    `json:"name"`
+	MediaType   string    `json:"mediaType"`
+	Size        int64     `json:"size"`
+	SHA256      string    `json:"sha256"`
+	Source      string    `json:"source"` // upload | run:<runId>
+	Sensitivity string    `json:"sensitivity"`
+	CreatedAt   time.Time `json:"createdAt"`
+	ExpiresAt   time.Time `json:"expiresAt"`
+}
+
+// FileSourceUpload: the member uploaded the file; a run's deliverable has the source run:<runId>.
+const FileSourceUpload = "upload"

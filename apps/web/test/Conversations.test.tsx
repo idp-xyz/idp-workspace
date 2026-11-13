@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { Conversations, chatAgents } from '../src/Conversations.tsx';
+import { Conversations, chatAgents, fileField } from '../src/Conversations.tsx';
 import type { Api } from '../src/api.ts';
 import type { AGUIEvent } from '../src/agent/events.ts';
 import type { Conversation, InstalledApp } from '../src/types.ts';
@@ -178,5 +178,53 @@ describe('Conversations', () => {
     await screen.findByText('重试');
     expect(screen.queryByText(/idp-host:8450/)).toBeNull();
     expect(calls.runEvents).toEqual([]);
+  });
+});
+
+describe('files in a conversation (D23)', () => {
+  const office: InstalledApp = { installation: { installationId: 'o', app: 'office', version: '1.0.0' }, digest: 'd', manifest: { name: 'office', version: '1.0.0', title: 'Office', publisher: 'p', capabilities: [], actions: [
+    { name: 'office.run', title: 'Office assistant', target: { kind: 'host.run', agent: 'office-assistant' },
+      input: { type: 'object', required: ['message'], properties: { message: { type: 'string' }, files: { type: 'array', items: { type: 'string', format: 'idp-file' } } } } },
+  ] } };
+
+  it('finds the field that takes files', () => {
+    expect(fileField(office.manifest.actions[0].input)).toEqual({ field: 'files', multi: true });
+    expect(fileField({ type: 'object', properties: { doc: { type: 'string', format: 'idp-file' } } })).toEqual({ field: 'doc', multi: false });
+    expect(fileField(message)).toBeUndefined();
+  });
+
+  it('attaches an uploaded file to the question and offers what the run delivered for download', async () => {
+    const { api, calls } = fakeApi({ scripts: [{ events: [
+      { type: 'RUN_STARTED' },
+      { type: 'CUSTOM', name: 'idp.host/file.delivered', value: { toolCallId: 'c4', ref: 'f-out', name: '报价单-修订.docx', size: 2048 } },
+      { type: 'TEXT_MESSAGE_START', messageId: 'm1' }, { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: '改好了。' }, { type: 'TEXT_MESSAGE_END', messageId: 'm1' },
+      { type: 'RUN_FINISHED' },
+    ], last: '6' }] });
+    const uploads: string[] = [];
+    const fetched: string[] = [];
+    Object.assign(api, {
+      uploadFile: async (_w: string, _b: Blob, name: string) => { uploads.push(name); return { id: 'f-in', workspace: 'us-ops', name, mediaType: 'x', size: 4096, sha256: 'a', source: 'upload', sensitivity: 'internal', createdAt: '', expiresAt: '' }; },
+      fileContent: async (_w: string, id: string) => { fetched.push(id); return new Blob(['x']); },
+      files: async () => [],
+    });
+    const created = vi.fn(() => 'blob:x');
+    Object.assign(URL, { createObjectURL: created, revokeObjectURL: vi.fn() });
+    const clicked = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    render(<Conversations api={api} ws={ws} apps={[office]} notify={vi.fn()} confirm={async () => true} />);
+    const picker = await screen.findByLabelText('选择文件');
+    fireEvent.change(picker, { target: { files: [new File(['PK'], '报价单.docx')] } });
+    expect(await screen.findByLabelText('移除 报价单.docx')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('消息'), { target: { value: '改成第二版' } });
+    fireEvent.click(screen.getByLabelText('发送'));
+    await waitFor(() => expect(calls.invoke.length).toBe(1));
+    expect(uploads).toEqual(['报价单.docx']);
+    expect((calls.invoke[0][1] as { input: unknown }).input).toEqual({ message: '改成第二版', files: ['f-in'] });
+    expect(await screen.findByText(/📄 报价单-修订.docx/)).toBeTruthy();
+    fireEvent.click(screen.getByText('下载'));
+    await waitFor(() => expect(fetched).toEqual(['f-out']));
+    expect(created).toHaveBeenCalled();
+    expect(clicked).toHaveBeenCalled();
+    clicked.mockRestore();
+    expect(screen.queryByLabelText('移除 报价单.docx')).toBeNull(); // the attachment went with the question
   });
 });
