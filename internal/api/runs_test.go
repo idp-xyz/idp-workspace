@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -110,6 +112,9 @@ func TestRelayStreamCopiesEventsAsTheyCome(t *testing.T) {
 		relayStream(w, r, ds, p, "/v1/runs/ws_1/events")
 	}))
 	t.Cleanup(srv.Close)
+	var release sync.Once
+	open := func() { release.Do(func() { close(gate) }) }
+	t.Cleanup(open) // runs before the servers close: a failed check must not leave the double waiting (and the test hanging)
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/workspaces/us-ops/runs/ws_1/events?after=3", nil)
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Last-Event-ID", "3")
@@ -131,7 +136,7 @@ func TestRelayStreamCopiesEventsAsTheyCome(t *testing.T) {
 	if !strings.Contains(first, "id: 4\n") || !strings.Contains(first, `"delta":"Hel"`) || strings.Contains(first, "RUN_FINISHED") {
 		t.Fatalf("first chunk: %q", first)
 	}
-	close(gate)
+	open()
 	rest, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(rest), ": keep-alive\n") || !strings.Contains(string(rest), "id: 5\ndata: {\"type\":\"RUN_FINISHED\"}\n\n") {
 		t.Fatalf("rest: %q", rest)
@@ -180,6 +185,8 @@ func asProblem(err error, pb **transport.Problem) bool {
 }
 
 // readSome reads what is available within d: a stream that only completes at its end would block here.
+// readSome reads until buf holds one whole event (a blank line ends it) or d passes: a single Read may return part of
+// what the relay flushed.
 func readSome(r io.Reader, buf []byte, d time.Duration) (int, error) {
 	type result struct {
 		n   int
@@ -187,13 +194,21 @@ func readSome(r io.Reader, buf []byte, d time.Duration) (int, error) {
 	}
 	ch := make(chan result, 1)
 	go func() {
-		n, err := r.Read(buf)
-		ch <- result{n, err}
+		n := 0
+		for n < len(buf) && !bytes.Contains(buf[:n], []byte("\n\n")) {
+			m, err := r.Read(buf[n:])
+			n += m
+			if err != nil {
+				ch <- result{n, err}
+				return
+			}
+		}
+		ch <- result{n, nil}
 	}()
 	select {
 	case res := <-ch:
 		return res.n, res.err
 	case <-time.After(d):
-		return 0, fmt.Errorf("nothing readable within %s: the relay buffers the stream", d)
+		return 0, fmt.Errorf("no whole event readable within %s: the relay buffers the stream", d)
 	}
 }
