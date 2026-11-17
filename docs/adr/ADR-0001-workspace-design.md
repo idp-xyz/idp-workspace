@@ -237,3 +237,15 @@
 | D25 | `targets.*.exchange` 增加 `sessionBound`：交换时请求 `requested_token_type=refresh_token`，**只用返回的访问令牌，refresh token 丢弃**（不缓存、不转发、不记录）。平台的 compose 对 `targets.host` 打开它 | idp-host 要在运行中续期它的网关凭据（D38），而 Keycloak 只允许对"在用户会话里有客户端会话"的令牌再交换出 refresh token；Workspace 这一次请求就是为了留下这个客户端会话。Workspace 自己不需要续期，所以不保留 refresh token，少一个要保护的凭据 |
 
 **验证**：`internal/dispatch` 的 `TestSessionBoundExchange`（请求的类型、下游只收到访问令牌、refresh token 不出现在任何请求里、关掉后恢复普通交换）；平台 PATH I、PATH K。
+
+## 20. D26：跟随运行直到它自己的时限（2026-11-17）
+
+起因：office-assistant 的运行时限是 30 分钟，跟随上限是固定的 10 分钟（D11）。2026-11-17 一次真实运行用了 12.5 分钟、以 `STEP_LIMIT` 结束，bob 的收件箱里却是"result unavailable … context deadline exceeded"：跟随者到 10 分钟主动断开，没有读到结局。
+
+| # | 决策 | 理由 |
+|---|---|---|
+| D26 | 跟随者开始时读 `GET /v1/runs/{id}` 的 `deadlineAt`，跟到那个时刻再加 3 分钟；读不到（请求失败、没有这个字段）时仍用 `MaxWait`（默认 10 分钟）。确认等待的延长不变（D18：请求的过期时刻加 `MaxWait`）。3 分钟是给已经开始的那一步的：期限在模型调用或工具调用期间到点，运行要等这一步结束才失败，终态事件晚于 `deadlineAt` | 一次运行该被跟多久，由它自己的时限决定，而不是由一个对所有运行都一样的常数决定。断开后收件箱写的是跟随者自己的错误，用户看不到运行真正的结局 |
+
+**验证**：`internal/runs` 的 `TestFollowLastsAsLongAsTheRun`（运行的期限晚于 `MaxWait`，跟随者在 `MaxWait` 之后仍在，结束后收件箱是 `STEP_LIMIT` 而不是 result unavailable；读不到期限的用例仍在 `MaxWait` 放弃）。2026-11-17 一次真实运行跟了 34 分钟，收件箱是"failed / STEP_LIMIT the run reached its limit of 120 steps"。
+
+**局限**：令牌在打开事件流时校验一次，所以一次长运行靠这一条连接就够；流中断后重连（确认等待之后，D18）用的仍是开始时的令牌，而 D25 不保留 refresh token，令牌过期后的重连读不到后续事件，和以前一样。

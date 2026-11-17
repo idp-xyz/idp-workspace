@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -37,8 +38,13 @@ type Follower struct {
 	Endpoint string
 	HTTP     *http.Client
 	Log      *slog.Logger
-	MaxWait  time.Duration // default 10 minutes; time spent awaiting a confirmation does not count (D18)
+	MaxWait  time.Duration // default 10 minutes, used when the run's own deadline cannot be read; time spent awaiting a confirmation does not count (D18)
 }
+
+// runDeadlineGrace is how long the follower keeps reading after the run's own deadline (D26). A step that
+// started before the deadline still finishes its model call and its tool call, and only then does the run
+// fail, so the terminal event arrives after deadlineAt.
+const runDeadlineGrace = 3 * time.Minute
 
 // Run is one run to follow.
 type Run struct {
@@ -59,16 +65,21 @@ func (f *Follower) Started(ctx context.Context, r Run) error {
 
 // Follow reads the run's events until it ends, then updates the item. A RUN_FINISHED whose outcome
 // is an interrupt is not an end: the run waits on idp-host for its owner's decision, so the item says
-// so and the follower reads on after the last event. MaxWait bounds how long the run is followed;
-// a confirmation request moves the bound to the request's expiry plus MaxWait, because idp-host
-// resumes the run by then at the latest (an expired request counts as rejected). Follow runs
-// detached from the request and logs, never returns, its failures.
+// so and the follower reads on after the last event. The run is followed until its own deadline (D26),
+// or for MaxWait when that deadline cannot be read. A confirmation request moves the bound to the
+// request's expiry plus MaxWait, because idp-host resumes the run by then at the latest (an expired
+// request counts as rejected). Follow runs detached from the request and logs, never returns, its failures.
 func (f *Follower) Follow(r Run) {
 	wait := f.MaxWait
 	if wait == 0 {
 		wait = 10 * time.Minute
 	}
 	deadline := time.Now().Add(wait)
+	if until := f.runDeadline(r); !until.IsZero() {
+		if end := until.Add(runDeadlineGrace); end.After(time.Now()) {
+			deadline = end
+		}
+	}
 	var out outcome
 	var err error
 	for {
@@ -209,6 +220,39 @@ func interrupted(raw json.RawMessage) []interrupt {
 		return []interrupt{}
 	}
 	return o.Interrupts
+}
+
+// runDeadline reads the run's own deadline (GET /v1/runs/{id}). A zero time means it could not be read,
+// and the caller keeps its own bound.
+func (f *Follower) runDeadline(r Run) time.Time {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(f.Endpoint, "/")+"/v1/runs/"+url.PathEscape(r.RunID), nil)
+	if err != nil {
+		return time.Time{}
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+r.Token)
+	hc := f.HTTP
+	if hc == nil {
+		hc = http.DefaultClient
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return time.Time{}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return time.Time{}
+	}
+	var body struct {
+		DeadlineAt time.Time `json:"deadlineAt"`
+	}
+	if json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body) != nil {
+		return time.Time{}
+	}
+	return body.DeadlineAt
 }
 
 // read streams GET /v1/runs/{id}/events after event id after (0: from the start) and collects the

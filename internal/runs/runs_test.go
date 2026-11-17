@@ -89,6 +89,10 @@ type resumable struct {
 func newResumable(t *testing.T, noIDs bool, first, rest []string) *resumable {
 	s := &resumable{gate: make(chan struct{})}
 	s.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/events") { // Follow first reads the run's own deadline (D26); these tests have none
+			http.NotFound(w, r)
+			return
+		}
 		after := r.URL.Query().Get("after")
 		s.mu.Lock()
 		s.afters = append(s.afters, after)
@@ -243,6 +247,50 @@ func TestFollowGivesUpAfterExpiry(t *testing.T) {
 	}
 	all := store.all()
 	if final := all[len(all)-1]; len(all) != 2 || final.Title != "Ask the order assistant — result unavailable" || !strings.Contains(final.Summary, "deadline") {
+		t.Fatalf("%+v", all)
+	}
+}
+
+func TestFollowLastsAsLongAsTheRun(t *testing.T) {
+	// D26: a run whose own deadline is later than MaxWait is followed past MaxWait, and its real ending
+	// reaches the inbox
+	start := time.Now()
+	deadline := start.Add(600 * time.Millisecond)
+	gate := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(gate) }) }
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/runs/run_1" {
+			fmt.Fprintf(w, `{"runId":"run_1","deadlineAt":%q}`, deadline.Format(time.RFC3339Nano))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.(http.Flusher).Flush()
+		select {
+		case <-gate:
+		case <-r.Context().Done():
+			return
+		}
+		fmt.Fprintf(w, "id: 1\ndata: %s\n\n", `{"type":"RUN_ERROR","code":"STEP_LIMIT","message":"the run reached its limit of 120 steps"}`)
+	}))
+	t.Cleanup(func() { release(); srv.Close() })
+	store := &items{}
+	done := make(chan struct{})
+	go func() {
+		(&Follower{Store: store, Endpoint: srv.URL, MaxWait: 150 * time.Millisecond}).Follow(
+			Run{Tenant: "t1", Workspace: "w1", Subject: "bob", Token: "tok", RunID: "run_1", Title: "Work on a document"})
+		close(done)
+	}()
+	time.Sleep(350 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("the follower gave up at MaxWait while the run's own deadline was still ahead")
+	default:
+	}
+	release()
+	waitFor(t, "the follower to end", ended(done))
+	all := store.all()
+	if final := all[len(all)-1]; len(all) != 1 || final.Title != "Work on a document — failed" || !strings.Contains(final.Summary, "STEP_LIMIT the run reached its limit of 120 steps") {
 		t.Fatalf("%+v", all)
 	}
 }
