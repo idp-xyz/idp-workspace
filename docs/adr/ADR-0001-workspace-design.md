@@ -249,3 +249,31 @@
 **验证**：`internal/runs` 的 `TestFollowLastsAsLongAsTheRun`（运行的期限晚于 `MaxWait`，跟随者在 `MaxWait` 之后仍在，结束后收件箱是 `STEP_LIMIT` 而不是 result unavailable；读不到期限的用例仍在 `MaxWait` 放弃）。2026-11-17 一次真实运行跟了 34 分钟，收件箱是"failed / STEP_LIMIT the run reached its limit of 120 steps"。
 
 **局限**：令牌在打开事件流时校验一次，所以一次长运行靠这一条连接就够；流中断后重连（确认等待之后，D18）用的仍是开始时的令牌，而 D25 不保留 refresh token，令牌过期后的重连读不到后续事件，和以前一样。
+
+## 21. D27：读票据只用一次，运行结束票据作废（2026-11-17，平台 ADR-0002 阶段 2 的一项）
+
+D23 的票据在 60 分钟内可以反复出示：读票据每次都交出文件，写票据在运行的文件数上限内每次都收下一个文件。票据经过 idp-host 的数据库（加密）、网关与沙箱的内存和它们之间的连接；任何一处漏出去，拿到的人在这一小时里可以悄悄读那个文件，谁也不会发现。
+
+| # | 决策 | 理由 |
+|---|---|---|
+| D27 | **读票据出示一次就用掉；一次运行结束，它的票据全部作废。** 迁移 0005 加两张按租户强制行级安全的表：`file_ticket_uses`（票据的 `jti`、运行、已用次数、票据自己的过期时刻）与 `file_runs_ended`（运行、何时结束）。内部文件端点在验过签名之后、交出或收下任何字节之前调用 `SpendTicket`：运行已结束则 401；读票据的使用次数先记账（`INSERT … ON CONFLICT … WHERE uses < 上限`，一条语句），超过上限则 409 `TICKET_SPENT`，消息写给 agent 看："这个附件已经拷进过工作区，一个请求里一个附件只能导入一次，接着用已经导入的那份"。上限是 `IDP_WORKSPACE_FILE_TICKET_READS`，默认 1。写票据不计次数：它的额度本来就是这次运行能交付的文件数（`IDP_WORKSPACE_RUN_FILES`，`PutFile` 在所有者锁下数）。运行跟随（D11、D26）看到运行真正结束（`RUN_FINISHED` 且不是等待确认，或 `RUN_ERROR`）时调用 `EndRun`；事件流跟丢了、放弃了则不调用，因为运行可能还在做事。两张表的行只留到票据本来也会过期的时刻，随每小时的过期清理删除。没有 `jti` 的票据不再能打开 | 用掉即作废，漏出去的读票据要么已经没用，要么被人抢先用了而让 agent 的导入失败，这个失败看得见（沙箱的工具结果、Workspace 的日志 `file ticket refused`）。先记账后交字节，两个同时到达的出示只有一个得到文件。写票据做不成"一次"：一次运行可以交付几个文件，兜底交付（idp-host D41）还会再用它；能做的是把它的寿命从一小时缩到运行本身那么长。运行结束由跟随者报告而不是由 idp-host 回调：跟随者本来就在读这条事件流，不需要新的接口和新的凭据 |
+
+**代价与局限**：
+- agent 把导入的原件改坏了，不能再导入一次。平台的 officecli skill 加了一句：附件只能导入一次，原件留着别动，在副本上改。沙箱在出示读票据之前先确认工作区是调用者的、路径合法（idp-sandbox `CanPut`），所以工作区 id 或路径写错不会白白用掉票据；但取回字节之后才出的错（文件检查不通过、写进工作区失败）仍然会。真遇到这种部署，把 `IDP_WORKSPACE_FILE_TICKET_READS` 调大。
+- 跟随在进程内（D11）：Workspace 重启后未完成的跟随丢失，那些运行的票据就只按 60 分钟过期，和以前一样。
+- 运行在等待成员确认时没有结束，票据仍然有效，直到确认请求过期后运行真正结束。
+- 幂等重放同一个 `host.run` 时 Workspace 会重新签一套票据（新的 `jti`），idp-host 用的是第一次存下的那套，新签的没人用。
+
+**验证**：`internal/files` 的 `TestTicketsSayWhatTheyAllow`（票据有自己的 id 与过期时刻，两张票据 id 不同，没有 id 的打不开）；`internal/runs` 的 `TestFollowEndsTheRunsFileTicketsWhenTheRunEnds`（结束与失败都作废；跟丢了不作废；等待确认时不作废，确认后真正结束才作废）；集成测试（真实 PostgreSQL，`make test-integration`）的 member-files：读票据第二次出示得到 409 与那句话，8 个同时出示的只有 1 个得到文件，另一个租户的同名记录互不相干，假 HOST 的运行结束后未用过的读票据与写票据都是 401，别的运行的票据照常可用，过期的记录被清理。idp-sandbox 的 `TestAnImportSpendsTheTicketOnlyWhenTheFileCanLand`（三种落不了地的导入一次都没有出示票据；第二次导入把 Workspace 的话转给 agent）。平台 PATH J 没有重跑（那会重建正在运行的平台）。
+
+## 22. D28：文件的敏感级别跟着文件走（2026-11-17，配合 idp-host D43）
+
+`member_files.sensitivity` 从 D23 起就有，一直是缺省的 `internal`，没有地方能设，也没有人读。
+
+| # | 决策 | 理由 |
+|---|---|---|
+| D28 | ① 上传接口收 `?sensitivity=`（`public`、`internal`、`confidential`、`restricted`，缺省 `internal`，别的值 422）。② `host.run` 的附件里带上级别，但只在它不是 `internal` 时带。③ 写票据带上这次运行所读文件里最高的级别（不低于 `internal`），运行交付的文件按这个级别入库 | idp-host 据此决定一个可能用外部模型的 agent 拿不拿得到这个文件（idp-host D43）。`internal` 不发送：它就是"没写"的含义，只认识契约 1.8.0 的 HOST 仍然收得下这样的文件；级别更高的文件遇到旧 HOST 是整个请求被拒绝（多余字段），而不是级别被悄悄忽略。交付物继承级别：否则读了机密文件写出来的摘要是 `internal`，下一次就能交给外部模型，上限等于没有 |
+
+**没有做的**：壳里上传文件的界面没有定级的控件，已有文件不能改级别（要重新上传）；管理员不能按工作空间设缺省级别。钉住的 idp-host 契约副本换成 1.9.0（`tests/contracts/idp.telos.host/1.9.0/`）。
+
+**验证**：`internal/files` 的 `TestTicketsSayWhatTheyAllow`（写票据的级别、未知级别签不出来、两个级别取高且不低于 internal）；`internal/dispatch` 的 `TestHostRunSaysHowTheFilesAreClassified`（internal 不发送，其余照发；写票据是最高的那个；发出去的选项满足钉住的 1.9.0 契约）；集成测试 member-files（带级别上传、未知级别 422、附件里的级别、读了 confidential 文件的运行交付的文件是 confidential）。

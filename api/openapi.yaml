@@ -149,8 +149,9 @@ paths:
         path element is kept). Accepted: .docx .xlsx .pptx .pdf .png .jpg .jpeg .csv .txt .md, content matching the
         name, no macro formats or macro projects, Office packages within part, size and ratio limits (422
         FILE_REFUSED); 413 over the size; 409 QUOTA over the caller's quota. An action input field of format idp-file
-        takes its id. ws-member
-      parameters: [{name: name, in: query, required: true, schema: {type: string}}]
+        takes its id. ?sensitivity= classifies the file (default internal): a file above the tenant's ceiling is not
+        given to an agent that may use an external model (ADR-0001 D28). ws-member
+      parameters: [{name: name, in: query, required: true, schema: {type: string}}, {name: sensitivity, in: query, required: false, schema: {type: string, enum: [public, internal, confidential, restricted], default: internal}}]
       requestBody: {required: true, content: {application/octet-stream: {schema: {type: string, format: binary}}}}
       responses: {'201': {description: the file, content: {application/json: {schema: {$ref: '#/components/schemas/MemberFile'}}}}, '409': {$ref: '#/components/responses/Error'}, '413': {$ref: '#/components/responses/Error'}, '422': {$ref: '#/components/responses/Error'}}
     get:

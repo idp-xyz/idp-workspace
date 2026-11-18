@@ -40,6 +40,7 @@ type FileInput struct {
 	Name        string
 	MediaType   string
 	Source      string // upload | run:<runId>
+	Sensitivity string // public | internal | confidential | restricted; "" = internal (D28)
 	Content     []byte
 	Retention   time.Duration
 	// limits: the owner's total bytes and files in the tenant, and the files one run may deliver (0 = none)
@@ -99,9 +100,13 @@ func (s *Store) PutFile(ctx context.Context, tenant string, in FileInput) (*work
 			}
 			uploaded, content, key = k, nil, k
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO member_files (id, tenant_id, workspace_id, owner, name, media_type, size, sha256, source, content, object_key, expires_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now() + make_interval(secs => $12))`,
-			id, tenant, in.WorkspaceID, in.Owner, in.Name, in.MediaType, len(in.Content), hex.EncodeToString(sum[:]), in.Source, content, key, in.Retention.Seconds()); err != nil {
+		sensitivity := in.Sensitivity
+		if sensitivity == "" {
+			sensitivity = "internal"
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO member_files (id, tenant_id, workspace_id, owner, name, media_type, size, sha256, source, content, object_key, expires_at, sensitivity)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now() + make_interval(secs => $12), $13)`,
+			id, tenant, in.WorkspaceID, in.Owner, in.Name, in.MediaType, len(in.Content), hex.EncodeToString(sum[:]), in.Source, content, key, in.Retention.Seconds(), sensitivity); err != nil {
 			return err
 		}
 		var err error
@@ -198,6 +203,48 @@ func (s *Store) DeleteFile(ctx context.Context, tenant, workspaceID, owner, id s
 	return err
 }
 
+// SpendTicket records that a file ticket is being used (D27) and refuses it when the run it was made for has ended
+// (TICKET_ENDED) or when it has been used limit times already (TICKET_SPENT). limit 0 only asks whether the run has
+// ended: a write ticket's budget is the number of files its run may deliver, which PutFile counts.
+func (s *Store) SpendTicket(ctx context.Context, tenant, jti, run string, limit int, expires time.Time) error {
+	if jti == "" || run == "" {
+		return fail("TICKET_ENDED", "the file ticket has no id or run")
+	}
+	return s.InTenant(ctx, tenant, func(tx pgx.Tx) error {
+		var ended bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM file_runs_ended WHERE run = $1)`, run).Scan(&ended); err != nil {
+			return err
+		}
+		if ended {
+			return fail("TICKET_ENDED", "the run this file ticket was made for has ended")
+		}
+		if limit <= 0 {
+			return nil
+		}
+		var uses int
+		err := tx.QueryRow(ctx, `INSERT INTO file_ticket_uses (tenant_id, jti, run, uses, expires_at) VALUES ($1, $2, $3, 1, $4)
+			ON CONFLICT (tenant_id, jti) DO UPDATE SET uses = file_ticket_uses.uses + 1 WHERE file_ticket_uses.uses < $5 RETURNING uses`,
+			tenant, jti, run, expires, limit).Scan(&uses)
+		if errors.Is(err, pgx.ErrNoRows) {
+			if limit == 1 {
+				return fail("TICKET_SPENT", "this attachment was already copied into a workspace; an attachment can be imported once per request, so keep working on the file you imported (copy it first if you need the original again)")
+			}
+			return fail("TICKET_SPENT", "this attachment was already imported %d times, which is as often as one request may; keep working on the file you imported", limit)
+		}
+		return err
+	})
+}
+
+// EndRun makes every file ticket of a run useless from now on (D27). keep is how long that has to be remembered: the
+// tickets' own lifetime, after which they are refused for their age.
+func (s *Store) EndRun(ctx context.Context, tenant, run string, keep time.Duration) error {
+	return s.InTenant(ctx, tenant, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `INSERT INTO file_runs_ended (tenant_id, run, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3))
+			ON CONFLICT (tenant_id, run) DO NOTHING`, tenant, run, keep.Seconds())
+		return err
+	})
+}
+
 // PurgeExpiredFiles deletes the files past their expiry in every tenant; it returns how many.
 func (s *Store) PurgeExpiredFiles(ctx context.Context) (int64, error) {
 	var tenants []string
@@ -233,7 +280,16 @@ func (s *Store) PurgeExpiredFiles(ctx context.Context) (int64, error) {
 					keys = append(keys, k)
 				}
 			}
-			return rows.Err()
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			rows.Close()
+			// what was remembered about tickets that have expired since (D27)
+			if _, err := tx.Exec(ctx, `DELETE FROM file_ticket_uses WHERE expires_at <= now()`); err != nil {
+				return err
+			}
+			_, err = tx.Exec(ctx, `DELETE FROM file_runs_ended WHERE expires_at <= now()`)
+			return err
 		})
 		if err != nil {
 			return n, err

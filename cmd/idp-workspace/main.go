@@ -29,6 +29,7 @@
 //	                             app tokens' IDP_WORKSPACE_PUBLIC_URL), host.run actions get file tickets; reachable only from the sandbox
 //	IDP_WORKSPACE_FILE_MB (25) IDP_WORKSPACE_FILE_QUOTA_MB (200) IDP_WORKSPACE_FILE_QUOTA_FILES (500)
 //	IDP_WORKSPACE_FILE_RETENTION_DAYS (30) IDP_WORKSPACE_FILE_TICKET_MIN (60) IDP_WORKSPACE_RUN_FILES (10)   members' files
+//	IDP_WORKSPACE_FILE_TICKET_READS (1)  how often one read ticket may be presented: an attachment is fetched once (D27)
 //	IDP_WORKSPACE_FILE_STORE     postgres (default) or s3: where file contents live (ADR-0001 D24); s3 takes
 //	                             IDP_WORKSPACE_S3_ENDPOINT (http(s)://host:port), _S3_BUCKET, _S3_REGION (us-east-1),
 //	                             _S3_ACCESS_KEY_FILE, _S3_SECRET_KEY_FILE, _S3_CA_FILE (optional), _S3_SSE (default true: SSE-S3)
@@ -289,18 +290,19 @@ func serve(log *slog.Logger) error {
 		}
 	}
 	// ADR-0001 D23: members' files, and the tickets runs get for them
-	var fileMB, quotaMB, quotaFiles, days, ticketMin, runFiles int64
+	var fileMB, quotaMB, quotaFiles, days, ticketMin, runFiles, ticketReads int64
 	for _, x := range []struct {
 		dst *int64
 		key string
 		def int64
 	}{{&fileMB, "IDP_WORKSPACE_FILE_MB", 25}, {&quotaMB, "IDP_WORKSPACE_FILE_QUOTA_MB", 200}, {&quotaFiles, "IDP_WORKSPACE_FILE_QUOTA_FILES", 500},
-		{&days, "IDP_WORKSPACE_FILE_RETENTION_DAYS", 30}, {&ticketMin, "IDP_WORKSPACE_FILE_TICKET_MIN", 60}, {&runFiles, "IDP_WORKSPACE_RUN_FILES", 10}} {
+		{&days, "IDP_WORKSPACE_FILE_RETENTION_DAYS", 30}, {&ticketMin, "IDP_WORKSPACE_FILE_TICKET_MIN", 60}, {&runFiles, "IDP_WORKSPACE_RUN_FILES", 10},
+		{&ticketReads, "IDP_WORKSPACE_FILE_TICKET_READS", 1}} {
 		if *x.dst, err = envInt(x.key, x.def); err != nil {
 			return err
 		}
 	}
-	a.Files = api.FileConfig{MaxBytes: fileMB << 20, QuotaBytes: quotaMB << 20, QuotaFiles: int(quotaFiles), Retention: time.Duration(days) * 24 * time.Hour, RunFiles: int(runFiles)}
+	a.Files = api.FileConfig{MaxBytes: fileMB << 20, QuotaBytes: quotaMB << 20, QuotaFiles: int(quotaFiles), Retention: time.Duration(days) * 24 * time.Hour, RunFiles: int(runFiles), TicketReads: int(ticketReads)}
 	var internal *http.Server
 	if addr := env("IDP_WORKSPACE_INTERNAL_LISTEN", ""); addr != "" {
 		if a.AppTokens == nil {
@@ -328,6 +330,9 @@ func serve(log *slog.Logger) error {
 	}()
 	if d.Host != nil { // ADR-0001 D11: results of host.run actions come back into the inbox
 		a.Runs = &runs.Follower{Store: store, Endpoint: d.Host.Endpoint, HTTP: d.Host.HTTP, Log: log}
+		if a.Files.Tickets != nil { // a run that has ended takes its file tickets with it (D27)
+			a.Runs.Tickets, a.Runs.TicketTTL = store, time.Duration(ticketMin)*time.Minute
+		}
 	}
 	srv := &http.Server{Addr: env("IDP_WORKSPACE_LISTEN", "127.0.0.1:8560"), Handler: observability.HTTPMiddleware(tp, "idp-workspace/api", a.Handler()),
 		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 60 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second}

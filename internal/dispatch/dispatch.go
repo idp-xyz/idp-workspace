@@ -194,7 +194,7 @@ func (d *Dispatcher) startRun(ctx context.Context, r Request) (json.RawMessage, 
 	return res, nil
 }
 
-// fileOptions are the run's file options for idp-host (idp.telos.host 1.8.0 RunOptions, D23): each attached file with a
+// fileOptions are the run's file options for idp-host (idp.telos.host 1.9.0 RunOptions, D23, D28): each attached file with a
 // read ticket, and a write ticket for what the run delivers. Without a ticketer a run gets no files, and an input that
 // attaches some is refused.
 func (d *Dispatcher) fileOptions(r Request, runID string) (map[string]any, *Failure) {
@@ -211,12 +211,21 @@ func (d *Dispatcher) fileOptions(r Request, runID string) (map[string]any, *Fail
 	}
 	props := map[string]any{}
 	var atts []map[string]any
+	highest := "" // the level of what this run reads is the level of what it delivers (D28)
 	for _, f := range r.Files {
 		t, err := d.Tickets.Read(p.Tenant, caller, p.Subject, f.ID, runID)
 		if err != nil {
 			return nil, failure("INTERNAL", 0, "file ticket: %v", err)
 		}
-		atts = append(atts, map[string]any{"ref": f.ID, "name": f.Name, "mediaType": f.MediaType, "size": f.Size, "sha256": f.SHA256, "ticket": t})
+		att := map[string]any{"ref": f.ID, "name": f.Name, "mediaType": f.MediaType, "size": f.Size, "sha256": f.SHA256, "ticket": t}
+		// idp-host decides with the level whether a release that may use an external model gets the file (idp-host D43).
+		// internal is what an absent level means, so it is left out: a host that does not know the field yet (contract
+		// 1.8.0) still takes such files, and refuses the request for any file classified higher instead of ignoring the level.
+		if f.Sensitivity != "" && f.Sensitivity != "internal" {
+			att["sensitivity"] = f.Sensitivity
+		}
+		highest = files.HigherSensitivity(highest, f.Sensitivity)
+		atts = append(atts, att)
 	}
 	if len(atts) > 0 {
 		props["idp.host/attachments"] = atts
@@ -228,7 +237,7 @@ func (d *Dispatcher) fileOptions(r Request, runID string) (map[string]any, *Fail
 	if size <= 0 {
 		size = 25 << 20
 	}
-	w, err := d.Tickets.Write(p.Tenant, caller, p.Subject, r.Workspace.ID, runID, n, size)
+	w, err := d.Tickets.Write(p.Tenant, caller, p.Subject, r.Workspace.ID, runID, n, size, highest)
 	if err != nil {
 		return nil, failure("INTERNAL", 0, "file ticket: %v", err)
 	}

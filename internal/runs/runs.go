@@ -32,13 +32,22 @@ type Items interface {
 	PutItem(ctx context.Context, tenant, workspaceID, producer string, in postgres.ItemInput) (*workspace.InboxItem, bool, error)
 }
 
+// Tickets is the part of the store that ends a run's file tickets (D27).
+type Tickets interface {
+	EndRun(ctx context.Context, tenant, run string, keep time.Duration) error
+}
+
 // Follower follows runs on idp-host.
 type Follower struct {
-	Store    Items
-	Endpoint string
-	HTTP     *http.Client
-	Log      *slog.Logger
-	MaxWait  time.Duration // default 10 minutes, used when the run's own deadline cannot be read; time spent awaiting a confirmation does not count (D18)
+	Store Items
+	// Tickets, if set, is told when a run has ended, so that its file tickets stop working then and not an hour later
+	// (D27). TicketTTL is how long the tickets would have lived, which is how long the end has to be remembered.
+	Tickets   Tickets
+	TicketTTL time.Duration
+	Endpoint  string
+	HTTP      *http.Client
+	Log       *slog.Logger
+	MaxWait   time.Duration // default 10 minutes, used when the run's own deadline cannot be read; time spent awaiting a confirmation does not count (D18)
 }
 
 // runDeadlineGrace is how long the follower keeps reading after the run's own deadline (D26). A step that
@@ -99,6 +108,19 @@ func (f *Follower) Follow(r Run) {
 		if latest := latestExpiry(out.waiting); latest.Add(wait).After(deadline) {
 			deadline = latest.Add(wait)
 		}
+	}
+	// The run has ended (finished or failed, as idp-host says): nothing acts for it any more, so its file tickets end
+	// too. Not when the stream could not be followed: the run may still be working.
+	if err == nil && f.Tickets != nil {
+		keep := f.TicketTTL
+		if keep <= 0 {
+			keep = time.Hour
+		}
+		ectx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if eerr := f.Tickets.EndRun(ectx, r.Tenant, r.RunID, keep+time.Minute); eerr != nil && f.Log != nil {
+			f.Log.Warn("the run's file tickets were not ended", "run", r.RunID, "error", eerr)
+		}
+		cancel()
 	}
 	title, summary := r.Title+" — finished", ""
 	switch {

@@ -40,6 +40,8 @@ type Ticketer struct {
 // Ticket is an opened ticket. Caller is the token subject the platform forwards for the member (the ticket's sub, which
 // idp-sandbox compares with the caller of the tool call); Owner is the member as the workspace names them (the files' owner).
 type Ticket struct {
+	ID        string    // jti: what a use of the ticket is recorded under (D27)
+	Expires   time.Time // after which the ticket is refused anyway
 	Tenant    string
 	Caller    string
 	Owner     string
@@ -49,6 +51,32 @@ type Ticket struct {
 	Workspace string // write: where a delivered file belongs
 	MaxFiles  int    // write
 	MaxBytes  int64  // write: per file
+	// Sensitivity (write): the level a delivered file gets, the highest among the files the run was given (D28); "" = internal.
+	Sensitivity string
+}
+
+// Sensitivity levels, lowest first (the CMI's). An unknown or absent level counts as internal.
+var levels = map[string]int{"public": 0, "internal": 1, "confidential": 2, "restricted": 3}
+
+// ValidSensitivity reports whether s names a level.
+func ValidSensitivity(s string) bool { _, ok := levels[s]; return ok }
+
+// HigherSensitivity returns the higher of two levels. An absent level is internal, so folding files' levels from ""
+// never ends below internal: what a run delivers also holds what the member typed.
+func HigherSensitivity(a, b string) string {
+	rank := func(s string) int {
+		if r, ok := levels[s]; ok {
+			return r
+		}
+		return levels["internal"]
+	}
+	if rank(b) > rank(a) {
+		return b
+	}
+	if !ValidSensitivity(a) {
+		return "internal"
+	}
+	return a
 }
 
 func (t *Ticketer) now() time.Time {
@@ -76,9 +104,16 @@ func (t *Ticketer) Read(tenant, caller, owner, file, run string) (string, error)
 }
 
 // Write signs a ticket that lets run (acting for caller) deliver up to maxFiles files of up to maxBytes each to owner in
-// workspace.
-func (t *Ticketer) Write(tenant, caller, owner, workspace, run string, maxFiles int, maxBytes int64) (string, error) {
-	return t.sign(jwt.MapClaims{"tenant_id": tenant, "sub": caller, "owner": owner, "kind": KindWrite, "run": run, "workspace": workspace, "max_files": maxFiles, "max_bytes": maxBytes})
+// workspace. What it delivers is classified at least as sensitivity ("" = internal): the level of what the run read.
+func (t *Ticketer) Write(tenant, caller, owner, workspace, run string, maxFiles int, maxBytes int64, sensitivity string) (string, error) {
+	c := jwt.MapClaims{"tenant_id": tenant, "sub": caller, "owner": owner, "kind": KindWrite, "run": run, "workspace": workspace, "max_files": maxFiles, "max_bytes": maxBytes}
+	if sensitivity != "" && sensitivity != "internal" {
+		if !ValidSensitivity(sensitivity) {
+			return "", errors.New("unknown sensitivity " + sensitivity)
+		}
+		c["sensitivity"] = sensitivity
+	}
+	return t.sign(c)
 }
 
 // ErrTicket: the ticket is not one this workspace signed, is expired, or is incomplete.
@@ -92,9 +127,11 @@ func (t *Ticketer) Open(token string) (Ticket, error) {
 	}
 	s := func(k string) string { v, _ := c[k].(string); return v }
 	n := func(k string) int64 { v, _ := c[k].(float64); return int64(v) }
-	out := Ticket{Tenant: s("tenant_id"), Caller: s("sub"), Owner: s("owner"), Kind: s("kind"), File: s("file"), Run: s("run"), Workspace: s("workspace"), MaxFiles: int(n("max_files")), MaxBytes: n("max_bytes")}
+	out := Ticket{ID: s("jti"), Expires: time.Unix(n("exp"), 0), Tenant: s("tenant_id"), Caller: s("sub"), Owner: s("owner"), Kind: s("kind"), File: s("file"), Run: s("run"), Workspace: s("workspace"), MaxFiles: int(n("max_files")), MaxBytes: n("max_bytes"), Sensitivity: s("sensitivity")}
 	switch {
-	case out.Tenant == "" || out.Caller == "" || out.Owner == "" || out.Run == "":
+	case out.Tenant == "" || out.Caller == "" || out.Owner == "" || out.Run == "" || out.ID == "":
+		return Ticket{}, ErrTicket
+	case out.Sensitivity != "" && !ValidSensitivity(out.Sensitivity):
 		return Ticket{}, ErrTicket
 	case out.Kind == KindRead && out.File != "":
 	case out.Kind == KindWrite && out.Workspace != "" && out.MaxFiles > 0 && out.MaxBytes > 0:

@@ -305,3 +305,63 @@ func TestFollowNeedsEventIDsToResume(t *testing.T) {
 		t.Fatalf("%+v", all)
 	}
 }
+
+type endedRuns struct {
+	mu   sync.Mutex
+	runs []string
+	keep time.Duration
+}
+
+func (e *endedRuns) EndRun(_ context.Context, tenant, run string, keep time.Duration) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.runs, e.keep = append(e.runs, tenant+"/"+run), keep
+	return nil
+}
+
+func (e *endedRuns) all() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]string(nil), e.runs...)
+}
+
+// D27: a run that has ended, finished or failed, takes its file tickets with it. One that only waits for its owner has
+// not ended, and one the follower lost may still be working: neither ends the tickets.
+func TestFollowEndsTheRunsFileTicketsWhenTheRunEnds(t *testing.T) {
+	r := Run{Tenant: "t1", Workspace: "w1", Subject: "bob", Token: "tok", RunID: "run_1", Title: "Office"}
+	for name, c := range map[string]struct {
+		events []string
+		ends   bool
+	}{
+		"finished": {[]string{`{"type":"RUN_STARTED"}`, `{"type":"RUN_FINISHED","outcome":{"type":"success"}}`}, true},
+		"failed":   {[]string{`{"type":"RUN_STARTED"}`, `{"type":"RUN_ERROR","code":"STEP_LIMIT","message":"the run reached its limit"}`}, true},
+		"lost":     {[]string{`{"type":"RUN_STARTED"}`}, false}, // the stream ends without a terminal event
+	} {
+		tickets := &endedRuns{}
+		(&Follower{Store: &items{}, Endpoint: host(t, c.events...).URL, Tickets: tickets, TicketTTL: 45 * time.Minute}).Follow(r)
+		got := tickets.all()
+		if c.ends && (len(got) != 1 || got[0] != "t1/run_1" || tickets.keep < 45*time.Minute) {
+			t.Errorf("%s: the tickets were ended %v, kept %v", name, got, tickets.keep)
+		}
+		if !c.ends && len(got) != 0 {
+			t.Errorf("%s: the tickets of a run that may still be working were ended", name)
+		}
+	}
+	// waiting for a confirmation is not an end; the real end after it is
+	s := newResumable(t, false, paused(time.Now().Add(2*time.Minute)), []string{`{"type":"RUN_STARTED"}`, `{"type":"RUN_FINISHED","outcome":{"type":"success"}}`})
+	tickets := &endedRuns{}
+	done := make(chan struct{})
+	go func() {
+		(&Follower{Store: &items{}, Endpoint: s.srv.URL, MaxWait: time.Minute, Tickets: tickets}).Follow(Run{Tenant: "t1", Workspace: "w1", Token: "tok", RunID: "run_1", Title: "Office"})
+		close(done)
+	}()
+	waitFor(t, "the resumed stream", func() bool { return len(s.requests()) == 2 })
+	if got := tickets.all(); len(got) != 0 {
+		t.Fatalf("the tickets were ended while the run waited for its owner: %v", got)
+	}
+	s.release()
+	waitFor(t, "the follower to end", ended(done))
+	if got := tickets.all(); len(got) != 1 {
+		t.Fatalf("after the real end: %v", got)
+	}
+}

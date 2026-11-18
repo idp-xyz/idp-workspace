@@ -34,7 +34,7 @@ func withFiles(r Request) Request {
 }
 
 // D23: a host.run with files gives idp-host each file with a read ticket and a write ticket for deliveries, as RunOptions
-// of the pinned idp.telos.host 1.8.0.
+// of the pinned idp.telos.host 1.9.0.
 func TestHostRunGivesTheFilesWithTickets(t *testing.T) {
 	var got seen
 	srv := fake(t, 202, `{"runId":"ws_11111111222243338444555555555555","threadId":"thr_1","status":"QUEUED"}`, &got)
@@ -63,23 +63,23 @@ func TestHostRunGivesTheFilesWithTickets(t *testing.T) {
 		t.Fatalf("%+v %v", write, err)
 	}
 	// what the workspace sends is RunOptions of the contract it pins
-	raw, err := os.ReadFile("../../tests/contracts/idp.telos.host/1.8.0/schema.json")
+	raw, err := os.ReadFile("../../tests/contracts/idp.telos.host/1.9.0/schema.json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	doc, _ := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
 	c := jsonschema.NewCompiler()
-	if err := c.AddResource("urn:idp:telos:host:1.8.0", doc); err != nil {
+	if err := c.AddResource("urn:idp:telos:host:1.9.0", doc); err != nil {
 		t.Fatal(err)
 	}
-	s, err := c.Compile("urn:idp:telos:host:1.8.0#/$defs/RunOptions")
+	s, err := c.Compile("urn:idp:telos:host:1.9.0#/$defs/RunOptions")
 	if err != nil {
 		t.Fatal(err)
 	}
 	b, _ := json.Marshal(props)
 	v, _ := jsonschema.UnmarshalJSON(bytes.NewReader(b))
 	if err := s.Validate(v); err != nil {
-		t.Fatalf("the workspace's run options are not idp.telos.host 1.8.0 RunOptions: %v", err)
+		t.Fatalf("the workspace's run options are not idp.telos.host 1.9.0 RunOptions: %v", err)
 	}
 }
 
@@ -104,5 +104,62 @@ func TestHostRunWithoutTicketsTakesNoFiles(t *testing.T) {
 	props := got.body["forwardedProps"].(map[string]any)
 	if _, ok := props["idp.host/attachments"]; ok || props["idp.host/delivery"] == nil {
 		t.Fatalf("%v", props)
+	}
+}
+
+// D28: idp-host learns how each file is classified, and what the run delivers is classified like the highest of them.
+func TestHostRunSaysHowTheFilesAreClassified(t *testing.T) {
+	var got seen
+	srv := fake(t, 202, `{"runId":"ws_1","threadId":"thr_1","status":"QUEUED"}`, &got)
+	tk := ticketer(t)
+	d := &Dispatcher{Host: &Downstream{Endpoint: srv.URL, Auth: AuthForward}, Tickets: tk}
+	r := withFiles(req(workspace.Target{Kind: workspace.TargetHostRun, Agent: "office-assistant"}, ""))
+	r.Input = json.RawMessage(`{"message":"x","files":["a","b","c"]}`)
+	sum := strings.Repeat("3b", 32)
+	r.Files = []workspace.MemberFile{
+		{ID: "6f1c2a9e-8d4b-4c3a-9e21-0b7d5f3a8c41", Name: "a.txt", MediaType: "text/plain", Size: 1, SHA256: sum, Sensitivity: "internal"},
+		{ID: "0c9d4e7a-51b2-4f6e-8a3d-2e6b9c1f7d05", Name: "b.txt", MediaType: "text/plain", Size: 1, SHA256: sum, Sensitivity: "confidential"},
+		{ID: "a41f6b20-7e9c-4d18-b5a3-9f2c8e6d1b77", Name: "c.txt", MediaType: "text/plain", Size: 1, SHA256: sum, Sensitivity: "public"}}
+	if _, f := d.Dispatch(context.Background(), r); f != nil {
+		t.Fatal(f)
+	}
+	props := got.body["forwardedProps"].(map[string]any)
+	atts := props["idp.host/attachments"].([]any)
+	level := func(i int) any { return atts[i].(map[string]any)["sensitivity"] }
+	// internal is what an absent level means: it is left out, so a host that only knows contract 1.8.0 still takes the file
+	if len(atts) != 3 || level(0) != nil || level(1) != "confidential" || level(2) != "public" {
+		t.Fatalf("%v", atts)
+	}
+	write, err := tk.Open(props["idp.host/delivery"].(map[string]any)["ticket"].(string))
+	if err != nil || write.Sensitivity != "confidential" {
+		t.Fatalf("what the run delivers is classified %q: %v", write.Sensitivity, err)
+	}
+	raw, err := os.ReadFile("../../tests/contracts/idp.telos.host/1.9.0/schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, _ := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+	c := jsonschema.NewCompiler()
+	if err := c.AddResource("urn:idp:telos:host:1.9.0", doc); err != nil {
+		t.Fatal(err)
+	}
+	s, err := c.Compile("urn:idp:telos:host:1.9.0#/$defs/RunOptions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(props)
+	v, _ := jsonschema.UnmarshalJSON(bytes.NewReader(b))
+	if err := s.Validate(v); err != nil {
+		t.Fatalf("the workspace's run options are not idp.telos.host 1.9.0 RunOptions: %v", err)
+	}
+	// a run that read nothing above internal delivers internal files: the ticket then says nothing
+	r.Files = r.Files[:1]
+	r.Input = json.RawMessage(`{"message":"x","files":["a"]}`)
+	if _, f := d.Dispatch(context.Background(), r); f != nil {
+		t.Fatal(f)
+	}
+	write, _ = tk.Open(got.body["forwardedProps"].(map[string]any)["idp.host/delivery"].(map[string]any)["ticket"].(string))
+	if write.Sensitivity != "" {
+		t.Fatalf("%q", write.Sensitivity)
 	}
 }

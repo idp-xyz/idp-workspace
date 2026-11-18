@@ -240,7 +240,7 @@ func newEnv(t *testing.T, opts ...func(*postgres.Store)) *env {
 	a := &api.API{Store: store, Auth: verifier, Dispatcher: d, Log: log, Metrics: observability.NewMetrics(), Version: "it", WebDir: web, DevMode: true,
 		Files:     api.FileConfig{MaxBytes: 1 << 20, QuotaBytes: 3 << 20, QuotaFiles: 6, Retention: time.Hour, RunFiles: 2, Tickets: e.tickets},
 		AppTokens: signer, OIDC: &api.ShellOIDC{Issuer: "http://127.0.0.1:7080/realms/idp", ClientID: "workspace-shell", Scope: "openid"},
-		Runs: &runs.Follower{Store: store, Endpoint: e.host.srv.URL, Log: log}}
+		Runs: &runs.Follower{Store: store, Endpoint: e.host.srv.URL, Log: log, Tickets: store, TicketTTL: time.Hour}}
 	tp, _, err := observability.Setup("idp-workspace-it", "it", log)
 	if err != nil {
 		t.Fatal(err)

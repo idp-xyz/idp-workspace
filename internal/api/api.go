@@ -148,7 +148,7 @@ func (a *API) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.As(err, &pb):
 	case errors.As(err, &se):
-		status := map[string]int{"NOT_FOUND": 404, "CONFLICT": 409, "FORBIDDEN": 403, "INVALID": 422, "QUOTA": 409}[se.Code]
+		status := map[string]int{"NOT_FOUND": 404, "CONFLICT": 409, "FORBIDDEN": 403, "INVALID": 422, "QUOTA": 409, "TICKET_SPENT": 409, "TICKET_ENDED": 401}[se.Code]
 		if status == 0 {
 			status = 500
 		}

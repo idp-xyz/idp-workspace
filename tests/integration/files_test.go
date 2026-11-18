@@ -3,6 +3,7 @@ package integration
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 const officeManifest = `{
@@ -105,6 +108,34 @@ func memberFiles(t *testing.T, e *env) {
 	if st, out := e.call("POST", "/v1/workspaces/us-ops/actions/invoke", "bob", map[string]any{"app": "office", "action": "office.run", "input": map[string]any{"message": "x", "files": []string{"not-a-file"}}}); st != 422 {
 		t.Fatalf("%d %v", st, out)
 	}
+	// the run stays open on the host until the test lets it finish: its tickets are good while it lasts (D27)
+	finish := make(chan struct{})
+	e.host.mu.Lock()
+	e.host.stream = func(w http.ResponseWriter, r *http.Request) bool {
+		if !strings.HasSuffix(r.URL.Path, "/events") {
+			return false
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "id: 1\ndata: {\"type\":\"RUN_STARTED\"}\n\n")
+		w.(http.Flusher).Flush()
+		select {
+		case <-finish:
+		case <-r.Context().Done():
+			return true
+		}
+		_, _ = io.WriteString(w, "id: 2\ndata: {\"type\":\"RUN_FINISHED\"}\n\n")
+		return true
+	}
+	e.host.mu.Unlock()
+	finished := false
+	defer func() {
+		if !finished {
+			close(finish)
+		}
+		e.host.mu.Lock()
+		e.host.stream = nil
+		e.host.mu.Unlock()
+	}()
 	inv := e.must(201, "POST", "/v1/workspaces/us-ops/actions/invoke", "bob", map[string]any{"app": "office", "action": "office.run", "input": map[string]any{"message": "改成第二版", "files": []string{id}}})
 	runID := inv["result"].(map[string]any)["id"].(string)
 	sent := e.host.find(func(p string) bool { return p == "/v1/agents/office-assistant/runs" })
@@ -118,6 +149,10 @@ func memberFiles(t *testing.T, e *env) {
 		t.Fatalf("%v", att)
 	}
 
+	// D28: the file is internal unless its owner said otherwise, and a run that reads it delivers internal files
+	if att["sensitivity"] != nil {
+		t.Fatalf("an internal file's level is not sent: %v", att)
+	}
 	// the sandbox, with the read ticket, gets the file; with anything else, nothing
 	in := e.internal.URL + "/internal/v1/files"
 	st, got, h = raw(t, "GET", in+"/content", readTicket, nil)
@@ -128,6 +163,35 @@ func memberFiles(t *testing.T, e *env) {
 		if st, _, _ := raw(t, "GET", in+"/content", tok, nil); st != 401 {
 			t.Errorf("read with %s: %d", name, st)
 		}
+	}
+	// a read ticket is spent by its first use (D27): whoever presents it again, the sandbox or someone who copied it,
+	// gets nothing, and is told so in words the agent can act on
+	st, again, _ := raw(t, "GET", in+"/content", readTicket, nil)
+	if st != 409 || bytes.Contains(again, quote[:8]) || !strings.Contains(string(again), "TICKET_SPENT") || !strings.Contains(string(again), "already copied") {
+		t.Fatalf("the read ticket worked twice: %d %s", st, again)
+	}
+	// of several presentations at once exactly one gets the file
+	fresh, _ := e.tickets.Read(e.tenantA, "bob", "bob", id, runID)
+	codes := make(chan int, 8)
+	for i := 0; i < 8; i++ {
+		go func() { st, _, _ := raw(t, "GET", in+"/content", fresh, nil); codes <- st }()
+	}
+	served := 0
+	for i := 0; i < 8; i++ {
+		switch st := <-codes; st {
+		case 200:
+			served++
+		case 409:
+		default:
+			t.Errorf("a concurrent read: %d", st)
+		}
+	}
+	if served != 1 {
+		t.Fatalf("%d of 8 concurrent presentations of one read ticket were served", served)
+	}
+	// another tenant's ledger is another ledger: the same ticket id there says nothing about this one
+	if err := e.store.SpendTicket(context.Background(), e.tenantB, "jti-of-b", runID, 1, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
 	}
 	// the internal endpoint is not on the public listener (which answers any other path with the shell's page)
 	if _, got, _ := raw(t, "GET", e.api.URL+"/internal/v1/files/content", readTicket, nil); bytes.Equal(got, quote) {
@@ -179,6 +243,36 @@ func memberFiles(t *testing.T, e *env) {
 	if st, _, _ := raw(t, "GET", in+"/content", old, nil); st != 401 {
 		t.Fatalf("an expired ticket read: %d", st)
 	}
+	// the run ends on the host: from then on its tickets are worth nothing, used or not, read or write (D27)
+	unused, _ := e.tickets.Read(e.tenantA, "bob", "bob", id, runID)
+	close(finish)
+	finished = true
+	ended := false
+	for i := 0; i < 250 && !ended; i++ {
+		var n int
+		if err := e.store.InTenant(context.Background(), e.tenantA, func(tx pgx.Tx) error {
+			return tx.QueryRow(context.Background(), `SELECT count(*) FROM file_runs_ended WHERE run = $1`, runID).Scan(&n)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if ended = n == 1; !ended {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	if !ended {
+		t.Fatal("the run finished on the host and its tickets were not ended")
+	}
+	if st, out, _ := raw(t, "GET", in+"/content", unused, nil); st != 401 || bytes.Equal(out, quote) {
+		t.Fatalf("a read ticket of an ended run was served: %d", st)
+	}
+	if st, out := deliver(writeTicket, "late.txt", []byte("late")); st != 401 {
+		t.Fatalf("a file was delivered for an ended run: %d %v", st, out)
+	}
+	// which says nothing about another run's tickets
+	other, _ := e.tickets.Read(e.tenantA, "bob", "bob", id, "ws_another_run")
+	if st, got, _ := raw(t, "GET", in+"/content", other, nil); st != 200 || !bytes.Equal(got, quote) {
+		t.Fatalf("a ticket of a run that has not ended: %d", st)
+	}
 	// quota: 6 files of the owner in the tenant (3 so far)
 	for i := 0; i < 3; i++ {
 		if st, _ := upload("bob", "n.txt", []byte("n")); st != 201 {
@@ -191,8 +285,74 @@ func memberFiles(t *testing.T, e *env) {
 	// deleting: the owner only; the read ticket then finds nothing
 	e.must(404, "DELETE", "/v1/workspaces/us-ops/files/"+id, "carol", nil)
 	e.must(204, "DELETE", "/v1/workspaces/us-ops/files/"+id, "bob", nil)
-	if st, _, _ := raw(t, "GET", in+"/content", readTicket, nil); st != 404 {
+	gone, _ := e.tickets.Read(e.tenantA, "bob", "bob", id, "ws_another_run")
+	if st, _, _ := raw(t, "GET", in+"/content", gone, nil); st != 404 {
 		t.Fatalf("a deleted file was read: %d", st)
 	}
+	// what was remembered about tickets goes when they would have expired anyway
+	if err := e.store.InTenant(context.Background(), e.tenantA, func(tx pgx.Tx) error {
+		_, err := tx.Exec(context.Background(), `UPDATE file_ticket_uses SET expires_at = now() - interval '1 second'`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.store.PurgeExpiredFiles(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	_ = e.store.InTenant(context.Background(), e.tenantA, func(tx pgx.Tx) error {
+		return tx.QueryRow(context.Background(), `SELECT count(*) FROM file_ticket_uses`).Scan(&left)
+	})
+	if left != 0 {
+		t.Fatalf("%d spent tickets are remembered past their expiry", left)
+	}
+	// D28: a member classifies a file when uploading it; idp-host is told, and what a run that read it delivers is
+	// classified the same
+	st, secret := raw2(t, e, "POST", "/v1/workspaces/us-ops/files?name=plan.txt&sensitivity=confidential", "carol", []byte("the plan"))
+	if st != 201 || secret["sensitivity"] != "confidential" {
+		t.Fatalf("%d %v", st, secret)
+	}
+	if st, out := raw2(t, e, "POST", "/v1/workspaces/us-ops/files?name=plan.txt&sensitivity=top-secret", "carol", []byte("x")); st != 422 {
+		t.Fatalf("an unknown level: %d %v", st, out)
+	}
+	working := make(chan struct{}) // carol's run stays open on the host while the test delivers for it
+	defer close(working)
+	e.host.mu.Lock()
+	e.host.stream = func(w http.ResponseWriter, r *http.Request) bool {
+		if !strings.HasSuffix(r.URL.Path, "/events") {
+			return false
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "id: 1\ndata: {\"type\":\"RUN_STARTED\"}\n\n")
+		w.(http.Flusher).Flush()
+		select {
+		case <-working:
+		case <-r.Context().Done():
+		}
+		return true
+	}
+	e.host.mu.Unlock()
+	e.must(201, "POST", "/v1/workspaces/us-ops/actions/invoke", "carol", map[string]any{"app": "office", "action": "office.run", "input": map[string]any{"message": "summarize", "files": []string{secret["id"].(string)}}})
+	sent = e.host.find(func(p string) bool { return p == "/v1/agents/office-assistant/runs" })
+	props = sent.Body["forwardedProps"].(map[string]any)
+	if got := props["idp.host/attachments"].([]any)[0].(map[string]any); got["sensitivity"] != "confidential" || got["name"] != "plan.txt" {
+		t.Fatalf("%v", got)
+	}
+	st, d = deliver(props["idp.host/delivery"].(map[string]any)["ticket"].(string), "summary.txt", []byte("a summary of the plan"))
+	if st != 201 {
+		t.Fatalf("%d %v", st, d)
+	}
+	if f := e.must(200, "GET", "/v1/workspaces/us-ops/files/"+d["ref"].(string), "carol", nil); f["sensitivity"] != "confidential" {
+		t.Fatalf("what a run that read a confidential file delivered is classified %v", f["sensitivity"])
+	}
 	e.must(204, "DELETE", "/api/v1/workspaces/us-ops/installations/office", "alice", nil)
+}
+
+// raw2 sends bytes as who and decodes the JSON answer.
+func raw2(t *testing.T, e *env, method, path, who string, body []byte) (int, map[string]any) {
+	t.Helper()
+	st, out, _ := raw(t, method, e.api.URL+path, e.tokens[who], body)
+	var m map[string]any
+	_ = json.Unmarshal(out, &m)
+	return st, m
 }

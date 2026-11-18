@@ -23,6 +23,8 @@ type FileConfig struct {
 	QuotaFiles int           // (default 500)
 	Retention  time.Duration // how long a file is kept (default 30 days)
 	RunFiles   int           // files one run may deliver (default 10)
+	// TicketReads is how often one read ticket may be presented (default 1: an attachment is fetched once, D27).
+	TicketReads int
 	// Tickets signs the tickets a run gets for its files; nil = runs get no file access (uploads still work).
 	Tickets *files.Ticketer
 }
@@ -42,6 +44,9 @@ func (c *FileConfig) defaults() {
 	}
 	if c.RunFiles == 0 {
 		c.RunFiles = 10
+	}
+	if c.TicketReads <= 0 {
+		c.TicketReads = 1
 	}
 }
 
@@ -118,6 +123,12 @@ func (a *API) uploadFile(r *http.Request, p authorization.Principal) (int, any, 
 	if name == "" {
 		return 0, nil, transport.Fail(http.StatusUnprocessableEntity, "INVALID", "name is required (?name=<file name>)")
 	}
+	// ?sensitivity= is how the member classifies the file (default internal): a file above the tenant's ceiling is not
+	// given to an agent that may use an external model (D28, idp-host D43)
+	sensitivity := r.URL.Query().Get("sensitivity")
+	if sensitivity != "" && !files.ValidSensitivity(sensitivity) {
+		return 0, nil, transport.Fail(http.StatusUnprocessableEntity, "INVALID", "sensitivity must be public, internal, confidential or restricted")
+	}
 	data, err := a.readFile(r)
 	if err != nil {
 		return 0, nil, err
@@ -126,7 +137,7 @@ func (a *API) uploadFile(r *http.Request, p authorization.Principal) (int, any, 
 		return 0, nil, transport.Fail(http.StatusUnprocessableEntity, "FILE_REFUSED", err.Error())
 	}
 	f, err := a.Store.PutFile(r.Context(), p.Tenant, postgres.FileInput{WorkspaceID: m.Workspace.ID, Owner: p.Subject, Name: name, MediaType: files.MediaType(name),
-		Source: workspace.FileSourceUpload, Content: data, Retention: a.Files.Retention, QuotaBytes: a.Files.QuotaBytes, QuotaFiles: a.Files.QuotaFiles})
+		Sensitivity: sensitivity, Source: workspace.FileSourceUpload, Content: data, Retention: a.Files.Retention, QuotaBytes: a.Files.QuotaBytes, QuotaFiles: a.Files.QuotaFiles})
 	if err != nil {
 		return 0, nil, err
 	}
@@ -170,6 +181,20 @@ func (a *API) InternalHandler() http.Handler {
 		t, err := a.Files.Tickets.Open(strings.TrimSpace(tok))
 		if err != nil || t.Kind != kind {
 			transport.WriteProblem(w, transport.Fail(http.StatusUnauthorized, "UNAUTHENTICATED", "invalid or expired file ticket"))
+			return files.Ticket{}, false
+		}
+		// a ticket is good while its run lasts, and a read ticket for a set number of uses (D27). The use is recorded
+		// before any byte is handed out: of two presentations at once, one is refused.
+		uses := 0
+		if kind == files.KindRead {
+			uses = a.Files.TicketReads
+		}
+		if err := a.Store.SpendTicket(r.Context(), t.Tenant, t.ID, t.Run, uses, t.Expires); err != nil {
+			var se *postgres.Error
+			if errors.As(err, &se) && (se.Code == "TICKET_SPENT" || se.Code == "TICKET_ENDED") {
+				a.Log.Warn("file ticket refused", "reason", se.Code, "tenant", t.Tenant, "subject", t.Owner, "run", t.Run, "kind", t.Kind)
+			}
+			a.writeError(w, r, err)
 			return files.Ticket{}, false
 		}
 		return t, true
@@ -216,7 +241,7 @@ func (a *API) InternalHandler() http.Handler {
 			runFiles = t.MaxFiles
 		}
 		f, err := a.Store.PutFile(r.Context(), t.Tenant, postgres.FileInput{WorkspaceID: t.Workspace, Owner: t.Owner, Name: name, MediaType: files.MediaType(name),
-			Source: "run:" + t.Run, Content: data, Retention: a.Files.Retention, QuotaBytes: a.Files.QuotaBytes, QuotaFiles: a.Files.QuotaFiles, RunFiles: runFiles})
+			Sensitivity: t.Sensitivity, Source: "run:" + t.Run, Content: data, Retention: a.Files.Retention, QuotaBytes: a.Files.QuotaBytes, QuotaFiles: a.Files.QuotaFiles, RunFiles: runFiles})
 		if err != nil {
 			a.writeError(w, r, err)
 			return
