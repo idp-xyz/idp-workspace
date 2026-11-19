@@ -1,8 +1,8 @@
 {
  "$schema": "https://json-schema.org/draft/2020-12/schema",
- "$id": "urn:idp:telos:workspace:1.2.0",
- "title": "idp.telos.workspace 1.2.0",
- "description": "idp-workspace（企业工作入口）对外发布的契约（ADR-0001 D8）：Workspace、AppManifest（含 ActionContract、Target）、AppRelease、Installation、InboxItem、WorkContext、Invocation、BridgeMessage（应用桥 idp.bridge/v1）与 Problem。1.2.0 新增：MemberFile（成员的文件，D23）；动作输入 Schema 可用 format idp-file 声明接收成员文件的字段（字符串或其数组，值为文件 id）。生产者是 idp-workspace，权威副本在 idp-workspace/api/contracts/，由 go test ./internal/workspace -run TestContract 保证与实现一致；idp-contracts 中的副本只能与之逐字节相同。JSON Schema 只描述形状与可本地判定的规则；成员资格、能力授予、动作角色与事项可见性由服务判定。 1.1.0 相对 1.0.0 只做新增（M3，D15）：清单能力与桥方法各增 identity.token（应用向壳申请发给其后端的短期应用令牌）。",
+ "$id": "urn:idp:telos:workspace:1.3.0",
+ "title": "idp.telos.workspace 1.3.0",
+ "description": "idp-workspace（企业工作入口）对外发布的契约（ADR-0001 D8）：Workspace、AppManifest（含 ActionContract、Target）、AppRelease、Installation、InboxItem、WorkContext、Invocation、BridgeMessage（应用桥 idp.bridge/v1）与 Problem。1.3.0 新增（D29，只做新增）：InboxItem 的可选 sources 与 unverifiedCitations（一次完成的运行读过的网页来源，和回答里写了、却不在来源里的引用编号），新定义 RunSource。 1.2.0 新增：MemberFile（成员的文件，D23）；动作输入 Schema 可用 format idp-file 声明接收成员文件的字段（字符串或其数组，值为文件 id）。生产者是 idp-workspace，权威副本在 idp-workspace/api/contracts/，由 go test ./internal/workspace -run TestContract 保证与实现一致；idp-contracts 中的副本只能与之逐字节相同。JSON Schema 只描述形状与可本地判定的规则；成员资格、能力授予、动作角色与事项可见性由服务判定。 1.1.0 相对 1.0.0 只做新增（M3，D15）：清单能力与桥方法各增 identity.token（应用向壳申请发给其后端的短期应用令牌）。",
  "oneOf": [
   {
    "$ref": "#/$defs/Workspace"
@@ -752,6 +752,25 @@
     "resolution": {
      "$ref": "#/$defs/Resolution"
     },
+    "sources": {
+     "type": "array",
+     "maxItems": 100,
+     "items": {
+      "$ref": "#/$defs/RunSource"
+     },
+     "description": "1.3.0（D29）：已完成的运行读过或找到的网页来源，按 n 升序，至多 100 条，来自 idp-host 的 run.sources 事件（idp.telos.host 1.11.0），Workspace 逐项重新校验后才存。只有 kind 为 run 的事项可能有；运行没有来源、失败、取消或跟随中断时没有这个字段。看得到事项的人看得到它，别人看不到。标题与地址来自网页，是不可信的数据"
+    },
+    "unverifiedCitations": {
+     "type": "array",
+     "uniqueItems": true,
+     "maxItems": 100,
+     "items": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 999
+     },
+     "description": "1.3.0（D29）：运行完成时，最终回答里写了、但不在这次运行来源里的引用编号，升序。只是提示，回答不被拦截或修改；它只发现编号不存在，发现不了来源存在却不支持那句话。没有则没有这个字段"
+    },
     "version": {
      "type": "integer",
      "minimum": 1
@@ -1129,6 +1148,49 @@
      }
     }
    ]
+  },
+  "RunSource": {
+   "title": "RunSource",
+   "description": "1.3.0：一次运行的一个网页来源（D29；idp-host 的 RunSource，idp.telos.host 1.11.0）。n 是回答里 [n] 指向的编号。标题与地址来自网页：标题已去掉控制字符与双向文字符并截断，只能当纯文本显示；地址只会是 http 或 https，不含用户信息。不保存页面正文",
+   "x-idp-telos-owner": "idp.telos.workspace",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "n",
+    "title",
+    "url",
+    "cited"
+   ],
+   "properties": {
+    "n": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 1000000
+    },
+    "title": {
+     "type": "string",
+     "maxLength": 300
+    },
+    "url": {
+     "type": "string",
+     "maxLength": 2048,
+     "pattern": "^[Hh][Tt][Tt][Pp][Ss]?://[^\\s]+$"
+    },
+    "fetchedAt": {
+     "type": "string",
+     "format": "date-time",
+     "description": "读取的时间（UTC）；只搜索、没有读取的来源没有这个字段"
+    },
+    "sha256": {
+     "type": "string",
+     "pattern": "^[0-9a-f]{64}$",
+     "description": "第一次读取时交给模型的那一段正文的摘要，不是整页的摘要（idp-host D49-4）"
+    },
+    "cited": {
+     "type": "boolean",
+     "description": "最终回答是否写了这个编号"
+    }
+   }
   },
   "MemberFile": {
    "title": "MemberFile",

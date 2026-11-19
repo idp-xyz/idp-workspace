@@ -24,6 +24,10 @@ type ItemInput struct {
 	DueAt       *time.Time             `json:"dueAt"`
 	Actions     []workspace.ItemAction `json:"actions"`
 	Entities    []workspace.Entity     `json:"entities"`
+	// The web sources of a finished run (D29). Not part of the producers' API (json "-": the endpoint refuses the
+	// fields): only the run follower, which has read and checked the host's event, sets them.
+	Sources             []workspace.RunSource `json:"-"`
+	UnverifiedCitations []int                 `json:"-"`
 }
 
 func (in *ItemInput) validate() error {
@@ -73,6 +77,12 @@ func (in *ItemInput) validate() error {
 	if err := workspace.ValidEntities(in.Entities); err != nil {
 		return fail("INVALID", "%s", err.Error())
 	}
+	if err := workspace.ValidRunSources(in.Sources, in.UnverifiedCitations); err != nil {
+		return fail("INVALID", "%s", err.Error())
+	}
+	if in.Kind != workspace.ItemRun && (len(in.Sources) > 0 || len(in.UnverifiedCitations) > 0) {
+		return fail("INVALID", "only a run item has sources")
+	}
 	if in.Assignees.Subjects == nil {
 		in.Assignees.Subjects = []string{}
 	}
@@ -98,7 +108,7 @@ func refSystem(s string) bool {
 }
 
 const itemCols = `i.id::text, i.workspace_id::text, i.producer, i.external_ref, i.kind, i.title, i.summary, i.ref, i.assignee_subjects, i.assignee_roles,
-	i.priority, i.due_at, i.actions, i.entities, i.status, i.resolution, i.version, i.created_at, i.updated_at, m.read_at, m.archived_at`
+	i.priority, i.due_at, i.actions, i.entities, i.sources, i.unverified_citations, i.status, i.resolution, i.version, i.created_at, i.updated_at, m.read_at, m.archived_at`
 
 func itemFrom(subjectParam string) string {
 	return ` FROM inbox_items i LEFT JOIN inbox_marks m ON m.item_id = i.id AND m.subject = ` + subjectParam
@@ -106,9 +116,10 @@ func itemFrom(subjectParam string) string {
 
 func scanItem(row pgx.Row) (*workspace.InboxItem, error) {
 	var it workspace.InboxItem
-	var ref, actions, entities, resolution []byte
+	var ref, actions, entities, resolution, sources []byte
+	var unverified []int32
 	if err := row.Scan(&it.ID, &it.WorkspaceID, &it.Producer, &it.ExternalRef, &it.Kind, &it.Title, &it.Summary, &ref, &it.Assignees.Subjects, &it.Assignees.Roles,
-		&it.Priority, &it.DueAt, &actions, &entities, &it.Status, &resolution, &it.Version, &it.CreatedAt, &it.UpdatedAt, &it.ReadAt, &it.ArchivedAt); err != nil {
+		&it.Priority, &it.DueAt, &actions, &entities, &sources, &unverified, &it.Status, &resolution, &it.Version, &it.CreatedAt, &it.UpdatedAt, &it.ReadAt, &it.ArchivedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fail("NOT_FOUND", "inbox item not found")
 		}
@@ -122,6 +133,14 @@ func scanItem(row pgx.Row) (*workspace.InboxItem, error) {
 	}
 	if err := json.Unmarshal(entities, &it.Entities); err != nil {
 		return nil, err
+	}
+	if sources != nil {
+		if err := json.Unmarshal(sources, &it.Sources); err != nil {
+			return nil, err
+		}
+	}
+	for _, n := range unverified {
+		it.UnverifiedCitations = append(it.UnverifiedCitations, int(n))
 	}
 	if resolution != nil {
 		it.Resolution = &workspace.Resolution{}
@@ -141,15 +160,23 @@ func (s *Store) PutItem(ctx context.Context, tenant, workspaceID, producer strin
 	ref, _ := json.Marshal(in.Ref)
 	actions, _ := json.Marshal(in.Actions)
 	entities, _ := json.Marshal(in.Entities)
+	var sources []byte // NULL, not "[]": an item without sources has none
+	if len(in.Sources) > 0 {
+		sources, _ = json.Marshal(in.Sources)
+	}
+	var unverified []int32
+	for _, n := range in.UnverifiedCitations {
+		unverified = append(unverified, int32(n))
+	}
 	err = s.InTenant(ctx, tenant, func(tx pgx.Tx) error {
 		var id, status string
 		err := tx.QueryRow(ctx, `SELECT id::text, status FROM inbox_items WHERE workspace_id = $1 AND producer = $2 AND external_ref = $3 FOR UPDATE`, workspaceID, producer, in.ExternalRef).Scan(&id, &status)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			id, created = NewUUID(), true
-			if _, err := tx.Exec(ctx, `INSERT INTO inbox_items (id, tenant_id, workspace_id, producer, external_ref, kind, title, summary, ref, assignee_subjects, assignee_roles, priority, due_at, actions, entities)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
-				id, tenant, workspaceID, producer, in.ExternalRef, in.Kind, in.Title, in.Summary, ref, in.Assignees.Subjects, in.Assignees.Roles, in.Priority, in.DueAt, actions, entities); err != nil {
+			if _, err := tx.Exec(ctx, `INSERT INTO inbox_items (id, tenant_id, workspace_id, producer, external_ref, kind, title, summary, ref, assignee_subjects, assignee_roles, priority, due_at, actions, entities, sources, unverified_citations)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+				id, tenant, workspaceID, producer, in.ExternalRef, in.Kind, in.Title, in.Summary, ref, in.Assignees.Subjects, in.Assignees.Roles, in.Priority, in.DueAt, actions, entities, sources, unverified); err != nil {
 				return err
 			}
 		case err != nil:
@@ -159,8 +186,8 @@ func (s *Store) PutItem(ctx context.Context, tenant, workspaceID, producer strin
 				return fail("CONFLICT", "item %s is %s; a closed item is not reopened", in.ExternalRef, status)
 			}
 			if _, err := tx.Exec(ctx, `UPDATE inbox_items SET kind = $2, title = $3, summary = $4, ref = $5, assignee_subjects = $6, assignee_roles = $7, priority = $8, due_at = $9,
-				actions = $10, entities = $11, version = version + 1, updated_at = now() WHERE id = $1`,
-				id, in.Kind, in.Title, in.Summary, ref, in.Assignees.Subjects, in.Assignees.Roles, in.Priority, in.DueAt, actions, entities); err != nil {
+				actions = $10, entities = $11, sources = $12, unverified_citations = $13, version = version + 1, updated_at = now() WHERE id = $1`,
+				id, in.Kind, in.Title, in.Summary, ref, in.Assignees.Subjects, in.Assignees.Roles, in.Priority, in.DueAt, actions, entities, sources, unverified); err != nil {
 				return err
 			}
 		}

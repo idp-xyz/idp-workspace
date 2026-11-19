@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import type { Api } from './api.ts';
 import { Markdown } from './agent/markdown.tsx';
 import { friendly } from './errors.ts';
+import { RunSources } from './Sources.tsx';
 import type { InboxItem, InstalledApp, Workspace } from './types.ts';
 
 const priorityLabel: Record<InboxItem['priority'], string> = { urgent: '紧急', high: '高', normal: '普通', low: '低' };
@@ -104,6 +105,7 @@ export function Inbox({ api, ws, items, apps, confirm, notify, onChanged, onOpen
                 {item.status === 'withdrawn' && <span className="state failed">已撤回</span>}
               </div>
               {item.summary && <div className="summary"><Markdown text={item.summary} /></div>}
+              {run && <RunSources sources={item.sources} unverified={item.unverifiedCitations} />}
               <div className="meta">
                 {item.entities.map((e) => <span key={`${e.type}:${e.id}`} className="entity">{e.type}:{e.id}</span>)}
                 {item.dueAt && <span>到期 {new Date(item.dueAt).toLocaleString()}</span>}

@@ -7,12 +7,15 @@ export interface ActionContract { name: string; title: string; description?: str
 export interface Manifest { name: string; version: string; title: string; description?: string; publisher: string; entry?: { url: string }; capabilities: string[]; actions: ActionContract[] }
 export interface InstalledApp { installation: { installationId: string; app: string; version: string }; manifest: Manifest; digest: string; origin?: string }
 export interface ItemAction { app: string; action: string; label?: string; input?: Record<string, unknown> }
+/** a web page a finished run read or found (D29; contract RunSource): title and address are untrusted text from the page */
+export interface RunSource { n: number; title: string; url: string; fetchedAt?: string; sha256?: string; cited: boolean }
 export interface InboxItem {
   itemId: string; workspaceId: string; producer: string; externalRef: string;
   kind: 'approval' | 'task' | 'run' | 'notification'; title: string; summary?: string;
   ref: { system: string; kind: string; id: string; url?: string };
   priority: 'low' | 'normal' | 'high' | 'urgent'; dueAt?: string; actions: ItemAction[]; entities: Entity[];
   status: 'open' | 'resolved' | 'withdrawn'; resolution?: { outcome: string; by: string; at: string; note?: string };
+  sources?: RunSource[]; unverifiedCitations?: number[];
   version: number; createdAt: string; updatedAt: string; readAt?: string; archivedAt?: string;
 }
 export interface WorkContext { workspaceId: string; subject: string; entities: Entity[]; app?: string; thread?: string; itemId?: string; version: number }

@@ -28,7 +28,7 @@ var update = flag.Bool("update", false, "regenerate api/contracts/examples.json 
 
 const (
 	contractDir = "../../api/contracts"
-	contractID  = "urn:idp:telos:workspace:1.2.0"
+	contractID  = "urn:idp:telos:workspace:1.3.0"
 )
 
 type noLoader struct{}
@@ -136,6 +136,20 @@ func exampleItem() workspace.InboxItem {
 		Entities: []workspace.Entity{{Type: "order", ID: "1001"}}, Status: workspace.ItemOpen, Version: 1, CreatedAt: at, UpdatedAt: at}
 }
 
+// exampleRunItem is the item of a finished run that read the web (D29): one source the answer cites, one it does not
+// (found by a search, never read), and a number the answer cites that is no source.
+func exampleRunItem() workspace.InboxItem {
+	read := at.Add(-2 * time.Minute)
+	return workspace.InboxItem{ID: "5f6071a2-0000-4000-8000-000000000006", WorkspaceID: wsID, Producer: "idp-workspace", ExternalRef: "run:ws_7f3a1c2e5b6d4c8e9f0123456789abcd", Kind: workspace.ItemRun,
+		Title: "Ask the order assistant — finished", Summary: "Customs hold times at the port are about two days [1]; the carrier's notice says four [7].",
+		Ref:       workspace.Ref{System: "host", Kind: "run", ID: "ws_7f3a1c2e5b6d4c8e9f0123456789abcd"},
+		Assignees: workspace.Assignees{Subjects: []string{"bob"}, Roles: []string{}}, Priority: "normal", Actions: []workspace.ItemAction{}, Entities: []workspace.Entity{},
+		Sources: []workspace.RunSource{
+			{N: 1, Title: "Customs clearance times — Port Authority", URL: "https://port.example/customs/times", FetchedAt: &read, SHA256: strings.Repeat("5d", 32), Cited: true},
+			{N: 2, Title: "Carrier notices", URL: "https://carrier.example/notices"}},
+		UnverifiedCitations: []int{7}, Status: workspace.ItemOpen, Version: 3, CreatedAt: at.Add(-5 * time.Minute), UpdatedAt: at}
+}
+
 type example struct {
 	Definition string          `json:"definition"`
 	Value      json.RawMessage `json:"value"`
@@ -174,6 +188,7 @@ func buildExamples(t *testing.T) []byte {
 	done.Status, done.Version, done.UpdatedAt, done.ReadAt = workspace.ItemResolved, 2, at.Add(2*time.Hour), &read
 	done.Resolution = &workspace.Resolution{Outcome: "approved", By: "svc-eer", At: at.Add(2 * time.Hour), Note: "approved by bob in the workspace"}
 	add("InboxItem", done)
+	add("InboxItem", exampleRunItem())
 	add("WorkContext", workspace.WorkContext{WorkspaceID: wsID, Subject: "bob", Entities: []workspace.Entity{{Type: "order", ID: "1001"}, {Type: "customer", ID: "carol"}},
 		App: "orders", Thread: "thr_ops_42", ItemID: itemID, Version: 3, UpdatedAt: at})
 	add("Invocation", workspace.Invocation{ID: invID, WorkspaceID: wsID, Subject: "bob", App: "orders", AppVersion: "1.2.0", Action: "approval.approve", ItemID: itemID,
@@ -196,7 +211,7 @@ func buildExamples(t *testing.T) []byte {
 		Size: 48213, SHA256: strings.Repeat("3b", 32), Source: workspace.FileSourceUpload, Sensitivity: "internal", CreatedAt: at, ExpiresAt: at.Add(30 * 24 * time.Hour)})
 	add("MemberFile", workspace.MemberFile{ID: "7a2d3b0f-9e5c-4d4b-8f32-1c8e6a4b9d52", Workspace: "us-ops", Name: "报价单-修订.docx", MediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 		Size: 49102, SHA256: strings.Repeat("4c", 32), Source: "run:ws_7f3a1c2e5b6d4c8e9f0123456789abcd", Sensitivity: "internal", CreatedAt: at.Add(time.Hour), ExpiresAt: at.Add(30*24*time.Hour + time.Hour)})
-	f := examplesFile{Description: "idp.telos.workspace 1.2.0 的示例：每一个都是 idp-workspace 的 Go 值序列化的结果（API 返回或应用桥发送的形状）。", GeneratedBy: "go test ./internal/workspace -run TestContract -update", Examples: xs}
+	f := examplesFile{Description: "idp.telos.workspace 1.3.0 的示例：每一个都是 idp-workspace 的 Go 值序列化的结果（API 返回或应用桥发送的形状）。", GeneratedBy: "go test ./internal/workspace -run TestContract -update", Examples: xs}
 	raw, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -257,7 +272,7 @@ func TestContractFieldsMatchGo(t *testing.T) {
 		"ActionContract": workspace.ActionContract{}, "Target": workspace.Target{}, "Revocation": workspace.Revocation{}, "AppRelease": workspace.Release{},
 		"Installation": workspace.Installation{}, "Ref": workspace.Ref{}, "Assignees": workspace.Assignees{}, "ItemAction": workspace.ItemAction{},
 		"Resolution": workspace.Resolution{}, "Entity": workspace.Entity{}, "InboxItem": workspace.InboxItem{}, "WorkContext": workspace.WorkContext{},
-		"Problem": workspace.Problem{}, "Invocation": workspace.Invocation{}, "BridgeMessage": workspace.BridgeMessage{}, "MemberFile": workspace.MemberFile{}}
+		"Problem": workspace.Problem{}, "Invocation": workspace.Invocation{}, "BridgeMessage": workspace.BridgeMessage{}, "MemberFile": workspace.MemberFile{}, "RunSource": workspace.RunSource{}}
 	for def, zero := range closed {
 		d, ok := defs[def].(map[string]any)
 		if !ok {
@@ -444,5 +459,63 @@ func TestContractRejectsWhatTheWorkspaceRejects(t *testing.T) {
 	sort.Strings(events)
 	if !reflect.DeepEqual(enum("method"), methods) || !reflect.DeepEqual(enum("event"), events) {
 		t.Errorf("bridge methods/events differ: schema %v %v, Go %v %v", enum("method"), enum("event"), methods, events)
+	}
+}
+
+// TestContractAndGoAgreeOnWhatARunSourceIs: what the schema refuses in an item's sources the checks the store
+// runs before it writes refuse too (D29), and what both accept is an item the example shows. An item with no
+// sources has neither field.
+func TestContractAndGoAgreeOnWhatARunSourceIs(t *testing.T) {
+	k := loadContract(t)
+	item := exampleRunItem()
+	if err := k.validate("InboxItem", mutate(t, item, "sources", nil)); err != nil {
+		t.Fatalf("an item without sources is valid: %v", err)
+	}
+	if raw, _ := json.Marshal(exampleItem()); strings.Contains(string(raw), "sources") || strings.Contains(string(raw), "unverifiedCitations") {
+		t.Fatalf("an item without sources must not carry the fields: %s", raw)
+	}
+	long := strings.Repeat("a", workspace.MaxSourceTitle+1)
+	many := make([]workspace.RunSource, workspace.MaxRunSources+1)
+	for i := range many {
+		many[i] = workspace.RunSource{N: i + 1, Title: "t", URL: "https://a.example/"}
+	}
+	cases := map[string]struct {
+		sources    []workspace.RunSource
+		unverified []int
+	}{
+		"n is zero":               {[]workspace.RunSource{{N: 0, Title: "t", URL: "https://a.example/"}}, nil},
+		"n is above the bound":    {[]workspace.RunSource{{N: workspace.MaxSourceNumber + 1, Title: "t", URL: "https://a.example/"}}, nil},
+		"an ftp address":          {[]workspace.RunSource{{N: 1, Title: "t", URL: "ftp://a.example/f"}}, nil},
+		"a javascript address":    {[]workspace.RunSource{{N: 1, Title: "t", URL: "javascript:alert(1)"}}, nil},
+		"an address with a space": {[]workspace.RunSource{{N: 1, Title: "t", URL: "https://a.example/a b"}}, nil},
+		"a title over the bound":  {[]workspace.RunSource{{N: 1, Title: long, URL: "https://a.example/"}}, nil},
+		"a short sha256":          {[]workspace.RunSource{{N: 1, Title: "t", URL: "https://a.example/", SHA256: "ab"}}, nil},
+		"an uppercase sha256":     {[]workspace.RunSource{{N: 1, Title: "t", URL: "https://a.example/", SHA256: strings.Repeat("AB", 32)}}, nil},
+		"101 sources":             {many, nil},
+		"an unverified zero":      {nil, []int{0}},
+		"an unverified 1000":      {nil, []int{1000}},
+		"a repeated unverified":   {nil, []int{3, 3}},
+	}
+	for name, c := range cases {
+		it := exampleRunItem()
+		it.Sources, it.UnverifiedCitations = c.sources, c.unverified
+		raw, _ := json.Marshal(it)
+		if err := k.validate("InboxItem", raw); err == nil {
+			t.Errorf("%s: the schema accepts it", name)
+		}
+		if err := workspace.ValidRunSources(c.sources, c.unverified); err == nil {
+			t.Errorf("%s: the Go check accepts it", name)
+		}
+	}
+	if err := workspace.ValidRunSources(item.Sources, item.UnverifiedCitations); err != nil {
+		t.Errorf("the published example fails the Go check: %v", err)
+	}
+	var extra map[string]any
+	raw, _ := json.Marshal(item)
+	_ = json.Unmarshal(raw, &extra)
+	extra["sources"].([]any)[0].(map[string]any)["excerpt"] = "page text"
+	raw, _ = json.Marshal(extra)
+	if err := k.validate("InboxItem", raw); err == nil {
+		t.Error("a source is closed: an excerpt is not part of it")
 	}
 }

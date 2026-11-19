@@ -194,7 +194,7 @@ func (d *Dispatcher) startRun(ctx context.Context, r Request) (json.RawMessage, 
 	return res, nil
 }
 
-// fileOptions are the run's file options for idp-host (idp.telos.host 1.9.0 RunOptions, D23, D28): each attached file with a
+// fileOptions are the run's file options for idp-host (idp.telos.host 1.11.0 RunOptions, D23, D28): each attached file with a
 // read ticket, and a write ticket for what the run delivers. Without a ticketer a run gets no files, and an input that
 // attaches some is refused.
 func (d *Dispatcher) fileOptions(r Request, runID string) (map[string]any, *Failure) {

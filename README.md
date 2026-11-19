@@ -7,6 +7,7 @@ IDP TELOS 的企业工作入口（Workspace）：工作空间与成员、应用�
 - **应用注册**：清单 `idp.workspace.app/v1`（H5 入口、桥能力、动作契约、配置 Schema），发布不可变（摘要 = 规范化 JSON 的 sha256），可撤销。
 - **安装**：每个工作空间每个应用一份，配置按清单的 Schema 校验，`revision` + If-Match。
 - **收件箱**：生产者（`ws-producer`）按 `(producer, externalRef)` 幂等放入、只有生产者能结束；成员按主体或工作空间角色看到，自己的已读 / 归档标记互不影响。
+- **运行的网页来源**（D29）：`host.run` 的运行结束后，收件箱里它的事项（`run:<runId>`）列出这次运行读过的网页来源——编号、标题（纯文字）、主机名、读取时间、回答是否引用了它，地址只有 http / https 才是链接（新窗口、`rel="noopener noreferrer"`，完整地址可见）；回答里写了、却不在来源里的编号单独提示。来源取自 idp-host 事件流的 `idp.host/run.sources`（idp-host 契约 1.11.0，先升 HOST），Workspace 逐项再校验后存在事项的 `sources` / `unverifiedCitations`（可选字段，不在摘要文字里）；失败、取消或跟随中断的运行没有来源。
 - **动作**：成员调用应用的动作，Workspace 校验成员资格、发布状态、契约角色、事项是否提供该动作、输入 Schema，再转给拥有决定的系统：`host.run`（idp-host 建 AgentRun）、`eer.decision`（idp-eer 对 T2 审批作决定）、`webhook`（HMAC 签名调用应用后端）；每次调用留记录，`Idempotency-Key` 幂等。
 - **应用桥**：`packages/bridge`（TypeScript、零依赖）——壳端只接受应用入口源的消息、只执行清单申请的能力；应用端带超时与关联的请求；webhook 签名校验（与 Go 端同一测试向量）。
 - **Web 壳**（`apps/web`，React）：工作空间、收件箱（SSE 实时推送）、发起（按动作的输入 Schema 生成表单，发起不依附事项的动作，ADR D19）、应用导航与沙箱 frame、管理员的管理页（工作空间与成员、发布 / 撤销 / 安装应用、审计）；镜像内置并由服务同源提供。`host.run` 的结果自动回到发起者的收件箱。与真实 idp-host 的联调：`HOST=1 bash deploy/e2e.sh`；浏览器冒烟：`BROWSER=1 bash deploy/e2e.sh`。
@@ -14,7 +15,7 @@ IDP TELOS 的企业工作入口（Workspace）：工作空间与成员、应用�
 - **成员的文件**（D23）：成员上传文件（只有所有者能看、下载、删除；类型白名单、拒绝宏、校验内容），动作用 `format: idp-file` 收文件；`host.run` 为每个附件签读票据、再签一张交付用的写票据（idp-host 契约 1.8.0），idp-sandbox 在内部监听（`IDP_WORKSPACE_INTERNAL_LISTEN`）上凭票据取文件、交付做好的文件；对话页可附文件、下载交付物。文件内容缺省在 PostgreSQL，`IDP_WORKSPACE_FILE_STORE=s3` 时放进 S3 兼容的对象存储（RustFS 等；按 SHA-256 核对，D24）。
 - **我的记忆**（D21）：配置 `targets.cmi` 后，成员在壳的"记忆"页查看并删除助手存进 idp-cmi 的对话记忆（`GET /v1/me/memory`、`DELETE /v1/me/memory/{id}`、`DELETE /v1/me/memory`），始终用成员本人的令牌（可令牌交换）调用 CMI；删除写审计，不含内容；未配置时 404 `NOT_CONFIGURED`，壳隐藏该页。
 - **登录与令牌**（M3）：壳以 OIDC 授权码 + PKCE 登录；应用可申请 `identity.token`，由 Workspace 签发给应用后端的短期 ES256 令牌（`/.well-known/jwks.json`，`packages/bridge` 的 `verifyAppToken` 校验）；下游凭据可用 RFC 8693 令牌交换。真实 Keycloak 的端到端：`OIDC=1 BROWSER=1 bash deploy/e2e.sh`。
-- 契约 `idp.telos.workspace` 1.2.0 在 [`api/contracts/`](api/contracts)（`go test ./internal/workspace -run TestContract`），接口见 [`api/openapi.yaml`](api/openapi.yaml)。
+- 契约 `idp.telos.workspace` 1.3.0 在 [`api/contracts/`](api/contracts)（`go test ./internal/workspace -run TestContract`），接口见 [`api/openapi.yaml`](api/openapi.yaml)。
 
 ## 运行
 

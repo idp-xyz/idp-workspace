@@ -38,6 +38,7 @@ import (
 	"idp-workspace/internal/files"
 	"idp-workspace/internal/observability"
 	"idp-workspace/internal/runs"
+	"idp-workspace/internal/workspace"
 )
 
 func scratchDB(t *testing.T) (ownerURL, serviceURL string) {
@@ -693,6 +694,145 @@ func TestWorkspaceEndToEnd(t *testing.T) {
 		final := item("finished")
 		if final == nil || final["summary"] != "Result: hi" || final["dueAt"] != nil || final["version"].(float64) <= waiting["version"].(float64) {
 			t.Fatalf("final: %v", final)
+		}
+	})
+
+	t.Run("run-sources", func(t *testing.T) {
+		// D29: the web sources of a finished run come from the host's idp.host/run.sources event, are checked again,
+		// and sit on the run's item; whoever may see the item sees them, nobody else
+		streamOf := func(events ...string) {
+			e.host.mu.Lock()
+			e.host.stream = func(w http.ResponseWriter, r *http.Request) bool {
+				if !strings.HasSuffix(r.URL.Path, "/events") {
+					return false
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				for i, ev := range events {
+					fmt.Fprintf(w, "id: %d\ndata: %s\n\n", i+1, ev)
+				}
+				return true
+			}
+			e.host.mu.Unlock()
+		}
+		defer func() {
+			e.host.mu.Lock()
+			e.host.stream = nil
+			e.host.mu.Unlock()
+		}()
+		answer := []string{`{"type":"RUN_STARTED"}`, `{"type":"TEXT_MESSAGE_START","messageId":"m1"}`, `{"type":"TEXT_MESSAGE_CONTENT","messageId":"m1","delta":"Two days [1]; four [7]."}`, `{"type":"TEXT_MESSAGE_END","messageId":"m1"}`}
+		start := func() string {
+			st, out, _ := e.callH("POST", "/v1/workspaces/us-ops/actions/invoke", "bob", map[string]any{"app": "orders", "action": "order.review", "input": map[string]any{"message": "How long does customs take?"}})
+			if st != 201 {
+				t.Fatalf("%d %v", st, out)
+			}
+			return out["result"].(map[string]any)["id"].(string)
+		}
+		item := func(runID, suffix string) map[string]any {
+			for i := 0; i < 250; i++ {
+				for _, it := range e.must(200, "GET", "/v1/workspaces/us-ops/inbox?kind=run", "bob", nil)["items"].([]any) {
+					if x := it.(map[string]any); x["externalRef"] == "run:"+runID && strings.HasSuffix(x["title"].(string), suffix) {
+						return x
+					}
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			t.Fatalf("no item %q for run %s", suffix, runID)
+			return nil
+		}
+
+		// 150 sources, four of them hostile and one with a javascript: address
+		hostile := []struct{ title, url string }{
+			{`<script>alert(1)</script>`, `https://a.example/1`}, {`<img src=x onerror=alert(1)>`, `https://a.example/2`},
+			{"[click](javascript:alert(1)) **x**", `https://a.example/3`}, {"invoice\u202Efdp.exe", `https://a.example/4`}, {`js`, `javascript:alert(1)`},
+		}
+		var entries []string
+		for i := 1; i <= 150; i++ {
+			title, addr := fmt.Sprintf("Page %d", i), fmt.Sprintf("https://a.example/%d", i)
+			if i <= len(hostile) {
+				title, addr = hostile[i-1].title, hostile[i-1].url
+			}
+			tb, _ := json.Marshal(title)
+			entries = append(entries, fmt.Sprintf(`{"n":%d,"title":%s,"url":%q,"cited":%v}`, i, tb, addr, i == 1 || i == 6))
+		}
+		streamOf(append(append([]string{}, answer...), `{"type":"CUSTOM","name":"idp.host/run.sources","value":{"sources":[`+strings.Join(entries, ",")+`],"unverifiedCitations":[7],"droppedInvalid":0,"droppedOverLimit":0,"conflicts":0,"checked":true}}`, `{"type":"RUN_FINISHED"}`)...)
+		runID := start()
+		done := item(runID, "finished")
+		id := done["itemId"].(string)
+		if done["summary"] != "Two days [1]; four [7]." {
+			t.Fatalf("the sources are not appended to the summary: %v", done["summary"])
+		}
+		for _, got := range []map[string]any{done, e.must(200, "GET", "/v1/workspaces/us-ops/inbox/"+id, "bob", nil)} {
+			srcs, _ := got["sources"].([]any)
+			if len(srcs) != 100 || fmt.Sprint(got["unverifiedCitations"]) != "[7]" {
+				t.Fatalf("%d sources, unverified %v", len(srcs), got["unverifiedCitations"])
+			}
+			first := srcs[0].(map[string]any)
+			if first["n"] != 1.0 || first["title"] != "<script>alert(1)</script>" || first["cited"] != true || srcs[3].(map[string]any)["title"] != "invoicefdp.exe" ||
+				srcs[4].(map[string]any)["n"] != 6.0 || srcs[99].(map[string]any)["n"] != 101.0 {
+				t.Fatalf("%v", srcs[:6])
+			}
+			for _, x := range srcs {
+				if !strings.HasPrefix(x.(map[string]any)["url"].(string), "https://a.example/") {
+					t.Fatalf("an address that is not https got in: %v", x)
+				}
+			}
+		}
+		// the same item through the contract's door: what the endpoint serves is the published shape
+		raw, _ := json.Marshal(done)
+		if !strings.Contains(string(raw), `"unverifiedCitations":[7]`) {
+			t.Fatalf("%s", raw)
+		}
+
+		// who may see them: the item's assignee, nobody else
+		e.must(404, "GET", "/v1/workspaces/us-ops/inbox/"+id, "carol", nil)  // a member of the workspace, not the assignee
+		e.must(404, "GET", "/v1/workspaces/us-ops/inbox/"+id, "dan", nil)    // not a member of the workspace
+		e.must(404, "GET", "/v1/workspaces/"+wsID+"/inbox/"+id, "erin", nil) // another tenant
+		if items := e.must(200, "GET", "/v1/workspaces/us-ops/inbox?kind=run", "carol", nil)["items"].([]any); len(items) != 0 {
+			t.Fatalf("carol sees bob's run: %v", items)
+		}
+		e.must(201, "POST", "/api/v1/workspaces", "alice", map[string]any{"name": "eu-ops", "displayName": "EU operations"})
+		e.must(200, "PUT", "/api/v1/workspaces/eu-ops/members/dan", "alice", map[string]any{"roles": []string{}})
+		e.must(200, "PUT", "/api/v1/workspaces/eu-ops/members/bob", "alice", map[string]any{"roles": []string{}})
+		e.must(404, "GET", "/v1/workspaces/us-ops/inbox/"+id, "dan", nil) // a member of another workspace
+		e.must(404, "GET", "/v1/workspaces/eu-ops/inbox/"+id, "dan", nil)
+		e.must(404, "GET", "/v1/workspaces/eu-ops/inbox/"+id, "bob", nil) // the assignee, asking in the wrong workspace
+		if items := e.must(200, "GET", "/v1/workspaces/eu-ops/inbox?kind=run&status=all", "bob", nil)["items"].([]any); len(items) != 0 {
+			t.Fatalf("the item shows in another workspace: %v", items)
+		}
+		// the producers' endpoint does not take sources: only the follower sets them
+		st, out := e.call("POST", "/v1/workspaces/us-ops/inbox/items", "svc-eer", map[string]any{"externalRef": "x:1", "kind": "run", "title": "t",
+			"ref": map[string]any{"system": "host", "kind": "run", "id": "r"}, "sources": []map[string]any{{"n": 1, "title": "t", "url": "https://a.example/", "cited": true}}})
+		if st != 400 {
+			t.Fatalf("%d %v", st, out)
+		}
+
+		// the store is the last line: whoever calls it, an unchecked source is refused, and only a run item has any
+		in := postgres.ItemInput{ExternalRef: "run:direct", Kind: "run", Title: "direct", Ref: workspace.Ref{System: "host", Kind: "run", ID: "direct"},
+			Assignees: workspace.Assignees{Subjects: []string{"bob"}}, Sources: []workspace.RunSource{{N: 1, Title: "t", URL: "javascript:alert(1)"}}}
+		if _, _, err := e.store.PutItem(context.Background(), e.tenantA, wsID, "idp-workspace", in); err == nil || !strings.Contains(err.Error(), "scheme") {
+			t.Fatalf("a javascript: source was stored: %v", err)
+		}
+		in.Sources = []workspace.RunSource{{N: 1, Title: "t", URL: "https://a.example/"}}
+		in.Kind, in.Ref.Kind = "notification", "x"
+		if _, _, err := e.store.PutItem(context.Background(), e.tenantA, wsID, "idp-workspace", in); err == nil {
+			t.Fatal("a source was put on an item that is no run")
+		}
+
+		// a run without the event has no sources, and the fields are absent, not empty
+		streamOf(append(append([]string{}, answer...), `{"type":"RUN_FINISHED"}`)...)
+		plain := item(start(), "finished")
+		if _, has := plain["sources"]; has {
+			t.Fatalf("%v", plain)
+		}
+		if _, has := plain["unverifiedCitations"]; has {
+			t.Fatalf("%v", plain)
+		}
+		// a run that failed shows none, whatever was read before: the host sends the event for a completed run only
+		streamOf(`{"type":"RUN_STARTED"}`, `{"type":"CUSTOM","name":"idp.host/run.sources","value":{"sources":[{"n":1,"title":"t","url":"https://a.example/","cited":false}]}}`,
+			`{"type":"RUN_ERROR","code":"RUN_TIMEOUT","message":"the run exceeded its time limit"}`)
+		failed := item(start(), "failed")
+		if _, has := failed["sources"]; has {
+			t.Fatalf("%v", failed)
 		}
 	})
 

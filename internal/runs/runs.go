@@ -104,7 +104,7 @@ func (f *Follower) Follow(r Run) {
 			break
 		}
 		title, summary, due := awaiting(r, out.waiting)
-		f.put(r, title, summary, due)
+		f.put(r, title, summary, due, nil)
 		if latest := latestExpiry(out.waiting); latest.Add(wait).After(deadline) {
 			deadline = latest.Add(wait)
 		}
@@ -137,15 +137,32 @@ func (f *Follower) Follow(r Run) {
 	if len(out.files) > 0 { // the files themselves are in the conversation and among the member's files
 		summary = "Files delivered: " + strings.Join(out.files, ", ") + "\n\n" + summary
 	}
-	f.put(r, title, summary, nil)
+	// D29: the sources belong to a run that finished. The host sends the event only for a completed run, so a run
+	// that failed, was cancelled or hit its time limit has none here, and so has an item whose follow was lost: the
+	// workspace does not ask for them with a request of its own, and "result unavailable" says nothing about
+	// what the run read.
+	var src *sourceSet
+	if err == nil && !out.failed {
+		src = out.sources
+	}
+	f.put(r, title, summary, nil, src)
 }
 
-func (f *Follower) put(r Run, title, summary string, due *time.Time) {
+// sourceSet is what the follower keeps of the host's idp.host/run.sources event, after checking it.
+type sourceSet struct {
+	sources    []workspace.RunSource
+	unverified []int
+}
+
+func (f *Follower) put(r Run, title, summary string, due *time.Time, src *sourceSet) {
 	if len(summary) > 3900 {
 		summary = summary[:3900] + "…"
 	}
 	in := f.item(r, title, summary)
 	in.DueAt = due
+	if src != nil {
+		in.Sources, in.UnverifiedCitations = src.sources, src.unverified
+	}
 	if _, _, err := f.Store.PutItem(context.Background(), r.Tenant, r.Workspace, Producer, in); err != nil && f.Log != nil {
 		f.Log.Warn("run item not put into the inbox", "run", r.RunID, "error", err)
 	}
@@ -209,6 +226,7 @@ type outcome struct {
 	message string
 	text    string
 	files   []string    // names of the files the run delivered (idp.host/file.delivered, D23)
+	sources *sourceSet  // what the run read (idp.host/run.sources, D29): nil when the stream had none worth keeping
 	waiting []interrupt // non-nil: the run stopped for a decision (RUN_FINISHED with an interrupt outcome)
 	last    int64       // the id of the last event read
 }
@@ -333,9 +351,7 @@ func (f *Follower) read(ctx context.Context, r Run, after int64, text string, fi
 			Code    string          `json:"code"`
 			Outcome json.RawMessage `json:"outcome"`
 			Name    string          `json:"name"`
-			Value   struct {
-				Name string `json:"name"`
-			} `json:"value"`
+			Value   json.RawMessage `json:"value"`
 		}
 		raw := strings.Join(data, "\n")
 		data = nil
@@ -352,8 +368,21 @@ func (f *Follower) read(ctx context.Context, r Run, after int64, text string, fi
 				out.text = t
 			}
 		case "CUSTOM":
-			if ev.Name == "idp.host/file.delivered" && ev.Value.Name != "" {
-				out.files = append(out.files, ev.Value.Name)
+			switch ev.Name {
+			case "idp.host/file.delivered":
+				var v struct {
+					Name string `json:"name"`
+				}
+				if json.Unmarshal(ev.Value, &v) == nil && v.Name != "" {
+					out.files = append(out.files, v.Name)
+				}
+			case "idp.host/run.sources":
+				// D29: the host's list is read again here, field by field, before anything is kept; the last
+				// event wins (the host sends one), and one with nothing valid in it leaves no sources
+				out.sources = nil
+				if srcs, unverified, _ := workspace.ParseRunSources(ev.Value); len(srcs) > 0 || len(unverified) > 0 {
+					out.sources = &sourceSet{sources: srcs, unverified: unverified}
+				}
 			}
 		case "RUN_FINISHED":
 			out.waiting = interrupted(ev.Outcome)

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -364,4 +366,219 @@ func TestFollowEndsTheRunsFileTicketsWhenTheRunEnds(t *testing.T) {
 	if got := tickets.all(); len(got) != 1 {
 		t.Fatalf("after the real end: %v", got)
 	}
+}
+
+// sourcesEvent is the host's idp.host/run.sources event (idp-host D49-9) with the given value.
+func sourcesEvent(value string) string {
+	return `{"type":"CUSTOM","name":"idp.host/run.sources","value":` + value + `}`
+}
+
+const goodSources = `{"sources":[{"n":1,"title":"Customs clearance times","url":"https://port.example/customs","fetchedAt":"2026-11-19T10:00:00Z","sha256":"` +
+	"5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d" + `","cited":true},{"n":2,"title":"Carrier notices","url":"https://carrier.example/n","cited":false}],` +
+	`"unverifiedCitations":[7],"droppedInvalid":0,"droppedOverLimit":0,"conflicts":0,"checked":true}`
+
+func TestTheFollowerReadsTheSourcesOfTheHostsEventAndWithoutOneThereAreNone(t *testing.T) {
+	r := Run{RunID: "run_1", Token: "tok"}
+	with := host(t, `{"type":"RUN_STARTED"}`, `{"type":"CUSTOM","name":"idp.host/file.delivered","value":{"name":"a.docx"}}`, sourcesEvent(goodSources), `{"type":"RUN_FINISHED"}`)
+	out, err := (&Follower{Endpoint: with.URL}).read(context.Background(), r, 0, "", nil)
+	if err != nil || out.sources == nil || len(out.sources.sources) != 2 || out.sources.sources[0].URL != "https://port.example/customs" || !out.sources.sources[0].Cited ||
+		fmt.Sprint(out.sources.unverified) != "[7]" || len(out.files) != 1 {
+		t.Fatalf("%+v %v", out, err)
+	}
+	without := host(t, `{"type":"RUN_STARTED"}`, `{"type":"CUSTOM","name":"idp.host/model.usage","value":{"sources":[{"n":1}]}}`, `{"type":"RUN_FINISHED"}`)
+	if out, err := (&Follower{Endpoint: without.URL}).read(context.Background(), r, 0, "", nil); err != nil || out.sources != nil {
+		t.Fatalf("a stream without the event has no sources: %+v %v", out, err)
+	}
+	nothing := host(t, `{"type":"RUN_STARTED"}`, sourcesEvent(`{"sources":[{"n":0,"title":"t","url":"javascript:alert(1)","cited":false}]}`), `{"type":"RUN_FINISHED"}`)
+	if out, err := (&Follower{Endpoint: nothing.URL}).read(context.Background(), r, 0, "", nil); err != nil || out.sources != nil {
+		t.Fatalf("an event with nothing valid in it keeps nothing: %+v %v", out, err)
+	}
+}
+
+func TestAHostileEventIsKeptCleanedOrNotAtAll(t *testing.T) {
+	var entries []string
+	hostile := []struct{ title, url string }{
+		{`<script>alert(1)</script>`, `https://a.example/1`},
+		{`<img src=x onerror=alert(1)>`, `https://a.example/2`},
+		{`[click here](javascript:alert(1)) **bold**`, `https://a.example/3`},
+		{"invoice‮fdp.exe⁦", `https://a.example/4`},
+		{`javascript link`, `javascript:alert(document.cookie)`},
+		{`JaVaScRiPt link`, `JaVaScRiPt:alert(1)`},
+		{`data link`, `data:text/html;base64,PHNjcmlwdD4=`},
+		{`user info`, `https://trusted.example@evil.example/`},
+		{`vbscript`, `vbscript:msgbox(1)`},
+	}
+	for i, h := range hostile {
+		tb, _ := json.Marshal(h.title)
+		ub, _ := json.Marshal(h.url)
+		entries = append(entries, fmt.Sprintf(`{"n":%d,"title":%s,"url":%s,"cited":false}`, i+1, tb, ub))
+	}
+	srv := host(t, sourcesEvent(`{"sources":[`+strings.Join(entries, ",")+`]}`), `{"type":"RUN_FINISHED"}`)
+	out, err := (&Follower{Endpoint: srv.URL}).read(context.Background(), Run{RunID: "run_1", Token: "tok"}, 0, "", nil)
+	if err != nil || out.sources == nil || len(out.sources.sources) != 4 {
+		t.Fatalf("only the four with an http address stay: %+v %v", out, err)
+	}
+	for _, s := range out.sources.sources {
+		if strings.ContainsAny(s.Title, "‮⁦") || !strings.HasPrefix(s.URL, "https://a.example/") {
+			t.Errorf("not cleaned: %+v", s)
+		}
+	}
+	// markup is data: it is kept as text and escaped where it is shown (apps/web/test/Inbox.test.tsx)
+	if out.sources.sources[0].Title != `<script>alert(1)</script>` || out.sources.sources[3].Title != "invoicefdp.exe" {
+		t.Errorf("%+v", out.sources.sources)
+	}
+}
+
+func TestAnEventOfAHundredAndFiftySourcesKeepsAHundred(t *testing.T) {
+	var entries []string
+	for n := 1; n <= 150; n++ {
+		entries = append(entries, fmt.Sprintf(`{"n":%d,"title":"t","url":"https://a.example/%d","cited":false}`, n, n))
+	}
+	srv := host(t, sourcesEvent(`{"sources":[`+strings.Join(entries, ",")+`]}`), `{"type":"RUN_FINISHED"}`)
+	out, err := (&Follower{Endpoint: srv.URL}).read(context.Background(), Run{RunID: "run_1", Token: "tok"}, 0, "", nil)
+	if err != nil || out.sources == nil || len(out.sources.sources) != 100 || out.sources.sources[99].N != 100 {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestTheItemOfAFinishedRunCarriesItsSourcesAndTheSummaryIsLeftAlone(t *testing.T) {
+	s := newResumable(t, false, []string{`{"type":"RUN_STARTED"}`, `{"type":"TEXT_MESSAGE_START","messageId":"m1"}`,
+		`{"type":"TEXT_MESSAGE_CONTENT","messageId":"m1","delta":"Two days [1]; four [7]."}`, `{"type":"TEXT_MESSAGE_END","messageId":"m1"}`,
+		sourcesEvent(goodSources), `{"type":"RUN_FINISHED"}`}, nil)
+	store, done := follow(t, s, time.Minute)
+	waitFor(t, "the follower to end", ended(done))
+	all := store.all()
+	final := all[len(all)-1]
+	if len(all) != 1 || final.Title != "Ask the order assistant — finished" || final.Summary != "Two days [1]; four [7]." || len(final.Sources) != 2 || fmt.Sprint(final.UnverifiedCitations) != "[7]" {
+		t.Fatalf("%+v", all)
+	}
+	if strings.Contains(final.Summary, "port.example") {
+		t.Fatal("the sources are not appended to the summary text")
+	}
+	if err := workspace.ValidRunSources(final.Sources, final.UnverifiedCitations); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestARunWithoutTheEventHasNoSourcesOnItsItem(t *testing.T) {
+	s := newResumable(t, false, []string{`{"type":"RUN_STARTED"}`, `{"type":"RUN_FINISHED"}`}, nil)
+	store, done := follow(t, s, time.Minute)
+	waitFor(t, "the follower to end", ended(done))
+	if got := store.all()[0]; got.Sources != nil || got.UnverifiedCitations != nil {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestAFailedOrCutFollowShowsNoSources(t *testing.T) {
+	// idp-host sends the event only for a completed run (D49-8), and the follower asks for nothing more, so an item
+	// whose run failed, was cancelled or hit its limit has none; so has one whose stream was lost (D29)
+	for name, events := range map[string][]string{
+		"the run failed":             {`{"type":"RUN_STARTED"}`, sourcesEvent(goodSources), `{"type":"RUN_ERROR","code":"RUN_TIMEOUT","message":"the run exceeded its time limit"}`},
+		"the run was cancelled":      {`{"type":"RUN_STARTED"}`, sourcesEvent(goodSources), `{"type":"RUN_ERROR","code":"CANCELED","message":"canceled by its owner"}`},
+		"the stream ended too early": {`{"type":"RUN_STARTED"}`, sourcesEvent(goodSources)},
+	} {
+		s := newResumable(t, false, events, nil)
+		store, done := follow(t, s, time.Minute)
+		waitFor(t, name, ended(done))
+		got := store.all()[0]
+		if got.Sources != nil || got.UnverifiedCitations != nil || got.Title == "Ask the order assistant — finished" {
+			t.Errorf("%s: %+v", name, got)
+		}
+	}
+}
+
+// TestWhatIdpHostsContractAllowsOfASourceTheFollowerKeeps is the consumer side of idp.telos.host 1.11.0's RunSource
+// (D29): the bounds the workspace checks are the contract's, and every source of the contract's published AgentRun
+// example comes out of the follower's reading of the event unchanged. A source the host may publish that the
+// workspace dropped would be a source the member never sees.
+func TestWhatIdpHostsContractAllowsOfASourceTheFollowerKeeps(t *testing.T) {
+	dir := "../../tests/contracts/idp.telos.host/1.11.0/"
+	raw, err := os.ReadFile(dir + "schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema struct {
+		Defs map[string]struct {
+			Required   []string                   `json:"required"`
+			Properties map[string]json.RawMessage `json:"properties"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatal(err)
+	}
+	src := schema.Defs["RunSource"]
+	read := map[string]bool{}
+	rt := reflect.TypeOf(workspace.RunSource{})
+	for i := 0; i < rt.NumField(); i++ {
+		name, _, _ := strings.Cut(rt.Field(i).Tag.Get("json"), ",")
+		read[name] = true
+		if _, ok := src.Properties[name]; !ok {
+			t.Errorf("the workspace keeps RunSource.%s, which idp.telos.host does not define", name)
+		}
+	}
+	for name := range src.Properties {
+		if !read[name] {
+			t.Errorf("idp.telos.host's RunSource.%s is not read by the workspace", name)
+		}
+	}
+	bound := func(prop, key string) float64 {
+		var p map[string]any
+		_ = json.Unmarshal(src.Properties[prop], &p)
+		v, _ := p[key].(float64)
+		return v
+	}
+	if bound("n", "maximum") != workspace.MaxSourceNumber || bound("n", "minimum") != 1 || bound("title", "maxLength") != workspace.MaxSourceTitle || bound("url", "maxLength") != workspace.MaxSourceURL {
+		t.Errorf("the bounds differ from the contract's: n %v..%v, title %v, url %v", bound("n", "minimum"), bound("n", "maximum"), bound("title", "maxLength"), bound("url", "maxLength"))
+	}
+	var run struct {
+		Props map[string]map[string]any `json:"properties"`
+	}
+	_ = json.Unmarshal(mustJSON(t, schema.Defs["AgentRun"]), &run)
+	if run.Props["sources"]["maxItems"] != float64(workspace.MaxRunSources) {
+		t.Errorf("AgentRun.sources.maxItems %v", run.Props["sources"]["maxItems"])
+	}
+	items, _ := run.Props["unverifiedCitations"]["items"].(map[string]any)
+	if items["maximum"] != float64(workspace.MaxCitationNumber) || items["minimum"] != 1.0 {
+		t.Errorf("AgentRun.unverifiedCitations items %v", items)
+	}
+	raw, err = os.ReadFile(dir + "examples.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ex struct {
+		Examples []struct {
+			Definition string          `json:"definition"`
+			Value      json.RawMessage `json:"value"`
+		} `json:"examples"`
+	}
+	if err := json.Unmarshal(raw, &ex); err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for _, x := range ex.Examples {
+		var r struct {
+			Sources    []workspace.RunSource `json:"sources"`
+			Unverified []int                 `json:"unverifiedCitations"`
+		}
+		if x.Definition != "AgentRun" || json.Unmarshal(x.Value, &r) != nil || len(r.Sources) == 0 {
+			continue
+		}
+		checked++
+		got, unverified, dropped := workspace.ParseRunSources(x.Value)
+		if dropped != 0 || !reflect.DeepEqual(got, r.Sources) || !reflect.DeepEqual(unverified, r.Unverified) {
+			t.Errorf("the follower changes the contract's own example: %+v %v (%d dropped), want %+v %v", got, unverified, dropped, r.Sources, r.Unverified)
+		}
+	}
+	if checked == 0 {
+		t.Error("the contract has no example with sources")
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }

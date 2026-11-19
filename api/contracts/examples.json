@@ -1,5 +1,5 @@
 {
-  "description": "idp.telos.workspace 1.2.0 的示例：每一个都是 idp-workspace 的 Go 值序列化的结果（API 返回或应用桥发送的形状）。",
+  "description": "idp.telos.workspace 1.3.0 的示例：每一个都是 idp-workspace 的 Go 值序列化的结果（API 返回或应用桥发送的形状）。",
   "generatedBy": "go test ./internal/workspace -run TestContract -update",
   "examples": [
     {
@@ -568,6 +568,55 @@
         "createdAt": "2026-11-04T09:00:00Z",
         "updatedAt": "2026-11-04T11:00:00Z",
         "readAt": "2026-11-04T10:00:00Z"
+      }
+    },
+    {
+      "definition": "InboxItem",
+      "value": {
+        "itemId": "5f6071a2-0000-4000-8000-000000000006",
+        "workspaceId": "0a1b2c3d-0000-4000-8000-000000000001",
+        "producer": "idp-workspace",
+        "externalRef": "run:ws_7f3a1c2e5b6d4c8e9f0123456789abcd",
+        "kind": "run",
+        "title": "Ask the order assistant — finished",
+        "summary": "Customs hold times at the port are about two days [1]; the carrier's notice says four [7].",
+        "ref": {
+          "system": "host",
+          "kind": "run",
+          "id": "ws_7f3a1c2e5b6d4c8e9f0123456789abcd"
+        },
+        "assignees": {
+          "subjects": [
+            "bob"
+          ],
+          "roles": []
+        },
+        "priority": "normal",
+        "actions": [],
+        "entities": [],
+        "status": "open",
+        "sources": [
+          {
+            "n": 1,
+            "title": "Customs clearance times — Port Authority",
+            "url": "https://port.example/customs/times",
+            "fetchedAt": "2026-11-04T08:58:00Z",
+            "sha256": "5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d",
+            "cited": true
+          },
+          {
+            "n": 2,
+            "title": "Carrier notices",
+            "url": "https://carrier.example/notices",
+            "cited": false
+          }
+        ],
+        "unverifiedCitations": [
+          7
+        ],
+        "version": 3,
+        "createdAt": "2026-11-04T08:55:00Z",
+        "updatedAt": "2026-11-04T09:00:00Z"
       }
     },
     {

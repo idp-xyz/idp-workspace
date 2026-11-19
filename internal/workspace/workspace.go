@@ -353,9 +353,13 @@ type InboxItem struct {
 	Entities    []Entity     `json:"entities"`
 	Status      string       `json:"status"`
 	Resolution  *Resolution  `json:"resolution,omitempty"`
-	Version     int          `json:"version"`
-	CreatedAt   time.Time    `json:"createdAt"`
-	UpdatedAt   time.Time    `json:"updatedAt"`
+	// The web sources of a finished run and the numbers its answer cites that are none of them (D29); absent
+	// when the run left none. Whoever may see the item sees them.
+	Sources             []RunSource `json:"sources,omitempty"`
+	UnverifiedCitations []int       `json:"unverifiedCitations,omitempty"`
+	Version             int         `json:"version"`
+	CreatedAt           time.Time   `json:"createdAt"`
+	UpdatedAt           time.Time   `json:"updatedAt"`
 	// The caller's own marks.
 	ReadAt     *time.Time `json:"readAt,omitempty"`
 	ArchivedAt *time.Time `json:"archivedAt,omitempty"`

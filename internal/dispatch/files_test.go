@@ -34,7 +34,7 @@ func withFiles(r Request) Request {
 }
 
 // D23: a host.run with files gives idp-host each file with a read ticket and a write ticket for deliveries, as RunOptions
-// of the pinned idp.telos.host 1.9.0.
+// of the pinned idp.telos.host 1.11.0.
 func TestHostRunGivesTheFilesWithTickets(t *testing.T) {
 	var got seen
 	srv := fake(t, 202, `{"runId":"ws_11111111222243338444555555555555","threadId":"thr_1","status":"QUEUED"}`, &got)
@@ -63,23 +63,23 @@ func TestHostRunGivesTheFilesWithTickets(t *testing.T) {
 		t.Fatalf("%+v %v", write, err)
 	}
 	// what the workspace sends is RunOptions of the contract it pins
-	raw, err := os.ReadFile("../../tests/contracts/idp.telos.host/1.9.0/schema.json")
+	raw, err := os.ReadFile("../../tests/contracts/idp.telos.host/1.11.0/schema.json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	doc, _ := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
 	c := jsonschema.NewCompiler()
-	if err := c.AddResource("urn:idp:telos:host:1.9.0", doc); err != nil {
+	if err := c.AddResource("urn:idp:telos:host:1.11.0", doc); err != nil {
 		t.Fatal(err)
 	}
-	s, err := c.Compile("urn:idp:telos:host:1.9.0#/$defs/RunOptions")
+	s, err := c.Compile("urn:idp:telos:host:1.11.0#/$defs/RunOptions")
 	if err != nil {
 		t.Fatal(err)
 	}
 	b, _ := json.Marshal(props)
 	v, _ := jsonschema.UnmarshalJSON(bytes.NewReader(b))
 	if err := s.Validate(v); err != nil {
-		t.Fatalf("the workspace's run options are not idp.telos.host 1.9.0 RunOptions: %v", err)
+		t.Fatalf("the workspace's run options are not idp.telos.host 1.11.0 RunOptions: %v", err)
 	}
 }
 
@@ -134,23 +134,23 @@ func TestHostRunSaysHowTheFilesAreClassified(t *testing.T) {
 	if err != nil || write.Sensitivity != "confidential" {
 		t.Fatalf("what the run delivers is classified %q: %v", write.Sensitivity, err)
 	}
-	raw, err := os.ReadFile("../../tests/contracts/idp.telos.host/1.9.0/schema.json")
+	raw, err := os.ReadFile("../../tests/contracts/idp.telos.host/1.11.0/schema.json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	doc, _ := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
 	c := jsonschema.NewCompiler()
-	if err := c.AddResource("urn:idp:telos:host:1.9.0", doc); err != nil {
+	if err := c.AddResource("urn:idp:telos:host:1.11.0", doc); err != nil {
 		t.Fatal(err)
 	}
-	s, err := c.Compile("urn:idp:telos:host:1.9.0#/$defs/RunOptions")
+	s, err := c.Compile("urn:idp:telos:host:1.11.0#/$defs/RunOptions")
 	if err != nil {
 		t.Fatal(err)
 	}
 	b, _ := json.Marshal(props)
 	v, _ := jsonschema.UnmarshalJSON(bytes.NewReader(b))
 	if err := s.Validate(v); err != nil {
-		t.Fatalf("the workspace's run options are not idp.telos.host 1.9.0 RunOptions: %v", err)
+		t.Fatalf("the workspace's run options are not idp.telos.host 1.11.0 RunOptions: %v", err)
 	}
 	// a run that read nothing above internal delivers internal files: the ticket then says nothing
 	r.Files = r.Files[:1]

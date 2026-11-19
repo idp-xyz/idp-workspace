@@ -277,3 +277,54 @@ D23 的票据在 60 分钟内可以反复出示：读票据每次都交出文件
 **没有做的**：壳里上传文件的界面没有定级的控件，已有文件不能改级别（要重新上传）；管理员不能按工作空间设缺省级别。钉住的 idp-host 契约副本换成 1.9.0（`tests/contracts/idp.telos.host/1.9.0/`）。
 
 **验证**：`internal/files` 的 `TestTicketsSayWhatTheyAllow`（写票据的级别、未知级别签不出来、两个级别取高且不低于 internal）；`internal/dispatch` 的 `TestHostRunSaysHowTheFilesAreClassified`（internal 不发送，其余照发；写票据是最高的那个；发出去的选项满足钉住的 1.9.0 契约）；集成测试 member-files（带级别上传、未知级别 422、附件里的级别、读了 confidential 文件的运行交付的文件是 confidential）。
+
+## 23. D29：运行结束的事项列出它用过的网页来源（2026-11-19，平台 ADR-0003 附录 D 任务 WS1，配合 idp-host D49）
+
+起因：联网检索让 agent 的回答带 `[n]` 引用，成员却只能相信模型写的编号。idp-host 的 D49 在运行里记下工具真正返回过的来源，运行完成时把回答里的编号和来源对一遍，并在事件流的 `idp.host/run.sources` 里一次给出。Workspace 通过 D11 已有的"跟随运行"取得它，不另发请求，放进成员的收件箱事项，让成员能看到答案从哪里来、哪个编号没有对应的来源。
+
+| # | 决策 | 理由 |
+|---|---|---|
+| D29-1 | **采集：跟随者读 `CUSTOM idp.host/run.sources`，不加请求。** 事件的值里只取 `sources` 与 `unverifiedCitations`（`droppedInvalid` 等计数不存）。跟随到 `RUN_FINISHED`（不是等待确认）且运行没有失败时，随最后一次 `PutItem` 写入事项；更早的"running"、"awaiting confirmation"事项不带来源。同一事件出现多次以最后一次为准；没有这个事件的运行没有来源 | 事件只在运行完成时发一次（idp-host D49-9），在最终事项上一并写入，事项只多一次更新，不多一次请求。D18 的重连不需要带着来源走：来源只在最后一段事件流里 |
+| D29-2 | **Workspace 一侧把每个字段再校验一遍，不信任 HOST 的流。** `workspace.ParseRunSources`：①`n` 是 JSON 整数，1 到 1 000 000（`1.5`、`"3"`、`1e2`、前导零都不是）；②`url` 是字符串，不超过 2048 字节，**按解析后的结果**判断 scheme 为 http 或 https（不分大小写），有主机，没有用户信息，没有不透明部分，不含空白、控制字符、格式字符（含双向文字符）；③`title` 必须是字符串（可空）：无效 UTF-8 换成 U+FFFD，换行、制表符与各种空白折成一个空格，控制字符与格式字符（双向覆盖与隔离、零宽字符、字节序标记）去掉，空白折叠，超过 300 个字符截成 299 个加省略号；**标记不去掉**，`<script>` 以文字保存，在展示处转义；④`fetchedAt` 有则须是 RFC 3339，存为 UTC；⑤`sha256` 有则须是 64 位小写十六进制；`null` 与空串等于没有；⑥`cited` 缺省为假，不是布尔值则该条无效；⑦契约以外的字段（摘录）一律不存；⑧同一个 `n` 只留第一条，其余丢弃；按 `n` 升序，**至多 100 条**，多出的丢弃；一次事件最多读前 1000 条；⑨`unverifiedCitations` 只留 1 到 999 的整数，去重、升序、至多 100 个。**无效的条目整条丢弃，不修补**（标题的清理除外）。没有一条有效来源又没有无法核对的编号时，事项没有这两个字段 | 标题与地址来自网页，HOST 的清理是它自己的承诺，Workspace 要展示、要生成链接，所以自己再查一遍；把范围取成与 idp.telos.host 1.11.0 的 `RunSource` 一致（`TestWhatIdpHostsContractAllowsOfASourceTheFollowerKeeps` 逐项比对，并要求契约自己的示例原样通过），不比 HOST 更严也不更松，HOST 允许发布的来源不会被默默丢掉。scheme 看解析结果而不是文字前缀，`JaVaScRiPt:`、前导空白、`data:` 都因此挡住 |
+| D29-3 | **事项上的形状：`InboxItem` 增可选的 `sources` 与 `unverifiedCitations`。** 存在 `inbox_items` 的两列（迁移 0006）：`sources jsonb`（数组，1 到 100 项）与 `unverified_citations integer[]`（1 到 100 个），都可为 NULL，没有来源的事项两列都是 NULL，接口里字段不出现（不是空列表）。表、行级安全与授权不变：能看到事项的人（被指派的成员、角色、或无人指派时的所有成员）看到来源，别人看不到；`GetItem`、`ListInbox`、`ChangedItems`、事项的 SSE 都经同一组列。**不进摘要文字**：摘要仍是模型的回答。只有 `run` 类事项能带来源 | 跟"已交付的文件"的先例不同：文件只是名字列在摘要前面（D23），来源要有结构（编号、标题、地址、时间、是否引用），摘要文字做不到安全地展示。结构化字段随事项走，权限就不用另外实现。字段只在 `ItemInput` 里以 `json:"-"` 出现：生产者接口（`POST /inbox/items`）收到 `sources` 是 400，来源只能由校验过 HOST 事件的跟随者写入；存储层 `PutItem` 再按 `ValidRunSources` 检查一遍（数量、编号唯一升序、scheme、标题已清理），是最后一道 |
+| D29-4 | **契约 `idp.telos.workspace` 升到 1.3.0（只做新增）：** `InboxItem` 增可选的 `sources`（`RunSource` 数组，至多 100）与 `unverifiedCitations`（1 到 999 的整数，唯一，至多 100）；新定义 `RunSource`（`n`、`title`、`url`，可选 `fetchedAt`、`sha256`，`cited`；封闭）。示例增一个读过网页的运行事项。测试：`TestContractExamplesAreGeneratedAndValid`（示例由 Go 值生成）、`TestContractFieldsMatchGo`（`RunSource` 的字段与 Go 结构一致）、`TestContractAndGoAgreeOnWhatARunSourceIs`（schema 拒绝的、`ValidRunSources` 也拒绝，12 种） | 旧的消费者忽略新字段，旧的生产者不写它们 |
+| D29-5 | **展示（内置页，`apps/web/src/Sources.tsx`）。** 运行事项在摘要下列出来源：编号 `[n]`、标题、**主机名**、"回答引用了它 / 回答没有引用"、"读取于 …"（没有 `fetchedAt` 写"只搜索到，没有读取"），下面一行是**完整地址**；引用过的来源排在前面，各组按编号。五个以内默认展开，更多时折叠，标题行写条数。**标题是文字节点**：React 把它当文字转义，不经 Markdown，不用 `dangerouslySetInnerHTML`；页面再清一遍控制字符与双向文字符。地址只有在**页面一侧也**通过检查时才是链接：文字必须以 `http(s)://` 加一个主机字符开头（浏览器的解析会把 `https:///x` 补成 `https://x/`，所以不能只信 `new URL`），解析后协议是 http 或 https，没有用户名密码，不含空白与格式字符；链接 `target="_blank" rel="noopener noreferrer"`，**链接文字就是完整地址**（浏览器将要打开的 `href`），并带 `title`。不是链接的地址只显示为文字。主机名取解析后的 `hostname`，国际化域名显示为 punycode，字形相近的域名就不会冒充别的站。有无法核对的编号时，来源列表上方一条 `role="note"` 的提示："回答引用了 [7]、[9]，它们不在这次运行的来源里：请先核对，再据此行事。"（单个编号用"它不在"）；没有无法核对的编号就没有这条提示。页面的 CSP 是 `script-src 'self'`、`style-src 'self' 'unsafe-inline'`，这次没有增加脚本，样式写进已有的样式表 | 地址与标题是网页的话，不是我们的话：标题可能含 HTML、Markdown 链接语法、双向覆盖（把 `invoice‮fdp.exe` 显示成别的扩展名）、`javascript:` 地址。完整地址放在文字里而不是只放在悬停提示里，是因为成员点之前需要看见它去哪里（触屏没有悬停） |
+| D29-6 | **失败、取消、到时限、跟随丢失的运行不显示来源。** HOST 只为完成的运行发这个事件（idp-host D49-8），Workspace 不为此另发请求去读 `GET /v1/runs/{id}`。所以事项是 "failed"（`RUN_ERROR`，含 `CANCELED`、`RUN_TIMEOUT`）或 "result unavailable"（跟随到 D11 的上限、D26 的期限后断开，或流提前结束）时没有来源，即使运行读过网页。跟随断开时事件即使已经读到也不用：运行的结局不明，"回答引用了它"这类说法没有依据 | 失败的运行没有最终回答，"是否被引用"没有意义，列表里全是"没有引用"会误导；少一次请求、少一条要保护的路径（那次请求要用成员的令牌，而令牌在长运行里可能已过期，D20、D26）。代价写在"没有做的" |
+
+**升级顺序：先 HOST（idp-host D49，契约 1.11.0），后 Workspace。** 先升 Workspace 没有害处，但在 HOST 发这个事件之前它什么也不做；先升 HOST 时旧 Workspace 忽略不认识的自定义事件（`read` 对其他 CUSTOM 事件本来就不处理），事项没有来源。迁移 0006 只加两列，旧版本的服务照常读写。
+
+**拿掉一个控制、看测试失败**（每一项在实现里拿掉一次，跑下列测试，失败后恢复）
+
+| 控制 | 拿掉的东西 | 失败的测试 |
+|---|---|---|
+| Workspace 一侧的再校验（D29-2） | 跟随者不经 `ParseRunSources`，把事件的值直接解码进 `RunSource` | `TestTheFollowerReadsTheSourcesOfTheHostsEventAndWithoutOneThereAreNone`、`TestAHostileEventIsKeptCleanedOrNotAtAll`、`TestAnEventOfAHundredAndFiftySourcesKeepsAHundred` |
+| scheme 检查（Go） | `ValidSourceURL` 不看 scheme | `TestEachKindOfInvalidSourceIsDroppedAndTheOthersStay`、`TestContractAndGoAgreeOnWhatARunSourceIs` |
+| 用户信息（Go） | 不拒绝 `user:pw@` | `TestEachKindOfInvalidSourceIsDroppedAndTheOthersStay`、`TestAHostileEventIsKeptCleanedOrNotAtAll` |
+| 标题清理（Go） | 标题原样保存 | `TestAHostileEventIsKeptCleanedOrNotAtAll`、`TestAValidSourceIsKeptAndTheListIsOrderedByNumber` |
+| 100 条上限 | 不截断 | `TestNoMoreThanAHundredSourcesAreKeptWhateverTheHostSends`、`TestAnEventOfAHundredAndFiftySourcesKeepsAHundred` |
+| 无法核对的编号的范围 | 去掉 999 的上限 | `TestUnverifiedNumbersAreIntegersFromOneToNineHundredNinetyNine` |
+| 存储层的检查 | `PutItem` 不调 `ValidRunSources` | 集成 `run-sources`（直接写入 `javascript:` 来源被存下） |
+| 只有 run 事项有来源 | 去掉 kind 判断 | 集成 `run-sources` |
+| 生产者接口不收来源 | `ItemInput.Sources` 的 tag 去掉 `json:"-"` | 集成 `run-sources`（`POST /inbox/items` 带 `sources` 应为 400） |
+| 失败的运行不带来源（D29-6） | 失败也写入 | `TestAFailedOrCutFollowShowsNoSources` |
+| 来源按工作空间隔离 | `GetItem` 不按工作空间过滤 | 集成 `run-sources`（被指派的 bob 在 eu-ops 里按 id 取这个事项应为 404）；`inbox-is-a-view` 也失败 |
+| 事项的可见规则 | 对 run 事项不套 `visibleItemSQL` | 集成 `run-sources`（同工作空间的 carol 按 id 取应为 404）；整体去掉时 `inbox-is-a-view` 先失败 |
+| 转义（页面） | 标题改用 `dangerouslySetInnerHTML` | `Sources.test.tsx` 的 hostile title 用例（页面字节里出现 `<script`、`<img`） |
+| scheme 检查（页面） | 去掉协议判断与"以 `http(s)://` 开头"两层 | `Sources.test.tsx` 的两个用例（有 `javascript:` 的链接）；只去掉其中一层时不失败：两层互为冗余，这是有意的 |
+| 主机字符检查（页面） | 去掉 `EXPLICIT_HOST` | `Sources.test.tsx` 的地址用例（`https:///x`） |
+| 用户信息（页面） | 不拒绝用户名密码 | `Sources.test.tsx` 两个用例 |
+| 标题清理（页面） | 不去控制字符与双向字符 | `Sources.test.tsx` 两个用例 |
+| `rel="noopener noreferrer"` | 去掉 | `Sources.test.tsx` 的列表用例 |
+| 提示 | 永远不显示；永远显示 | `Sources.test.tsx` 的提示用例（两个方向） |
+
+**验证**：`internal/workspace`（`TestAValidSourceIsKeptAndTheListIsOrderedByNumber`、`TestEachKindOfInvalidSourceIsDroppedAndTheOthersStay`：26 种无效条目、`TestNoMoreThanAHundredSourcesAreKeptWhateverTheHostSends`、`TestUnverifiedNumbersAreIntegersFromOneToNineHundredNinetyNine`、`TestATitleIsCleanedOfControlAndBidiCharactersAndCut`、`TestTheStoreCheckRefusesWhatTheFollowerWouldNotKeep` 与三个契约测试）；`internal/runs`（跟随者对 HOST 替身流的采集：有事件、没有事件、一条有效的都没有、含 `<script>`、`<img onerror>`、Markdown 链接、双向覆盖与 `javascript:` / `data:` / 用户信息地址的事件、150 条的事件、最终事项带来源且摘要不动、没有事件的运行没有来源、失败 / 取消 / 流提前结束没有来源，以及与 idp.telos.host 1.11.0 的消费方比对）；集成（`TestWorkspaceEndToEnd/run-sources`，真实 PostgreSQL：150 条含恶意标题的事件存成 100 条且已清理、`javascript:` 的那条不在；bob 看得到，同工作空间的 carol、另一个工作空间的成员 dan、被指派者在错的工作空间、另一个租户的 erin 都是 404；生产者接口带 `sources` 为 400；存储层拒绝 `javascript:` 来源与非 run 事项上的来源；没有事件的运行与失败的运行没有这两个字段）；壳（vitest `Sources.test.tsx`：列表各项、完整地址与 `rel`、两个方向的提示、没有来源时什么也不显示、恶意标题与地址的页面字节断言、`safeLink` 的 13 种地址）。契约测试钉住的 HOST 契约从 1.9.0 换成 1.11.0（`tests/contracts/idp.telos.host/1.11.0/`，与 idp-contracts 里的副本逐字节相同）。
+
+**没有做的**：
+- **失败的运行不显示它读过的来源。** 需要时是一次 `GET /v1/runs/{id}`（来源在运行的表示里，idp-host 对失败、取消的运行保留已收集的来源），代价见 D29-6。
+- **事件之前没有增量**：运行进行中事项上看不到来源（idp-host D49-9 也没有增量事件）。
+- **对话页（D22）不显示来源**：它按运行的事件流自己渲染；这次只做收件箱。
+- **不检查地址是否可达，不取标题所指页面，不显示页面正文或摘录**（HOST 不存，这里也不收）。
+- **`sha256` 不显示**：它只是第一段读到的正文的摘要（idp-host D49-4），展示出来会让人以为能校验整页。字段随事项返回，供以后的界面或审计用。
+- **来源不进记忆、不进审计**；管理员也看不到别人的运行事项（可见规则没变）。
+- **没有跑真实浏览器冒烟**（`tests/browser/shell.smoke.mjs`）：这次的检查在 jsdom 里做，页面字节是 React 的渲染结果。
+- **idp-web 重定向造成的"冲突"计数、`cited` 的标记语法的盲区**是 HOST 的事（idp-host D49-5、D49-8），Workspace 只展示 HOST 给的 `cited`。
