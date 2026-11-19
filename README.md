@@ -26,6 +26,8 @@ bash deploy/e2e.sh      # 镜像（含 web 壳）+ PostgreSQL 的 compose 端到
 npm run dev -w apps/web # 壳的开发服务器，API 代理到 127.0.0.1:8560
 ```
 
+CI 与 `deploy/e2e.sh`、`make test-integration` 里的第三方镜像（PostgreSQL、RustFS、Keycloak）先由 `deploy/pull-image.sh` 显式拉取并重试（最多 5 次，间隔 15、30、60、120 秒；本机已有则跳过），因为公共 registry 对匿名拉取按来源地址限流，而 CI 的 runner 与许多项目共用地址。
+
 `idp-workspace migrate`（owner 连接）→ `idp-workspace ensure-login idp_ws_svc` → `idp-workspace seed-tenant acme` → `idp-workspace serve`（环境变量见 `cmd/idp-workspace/main.go`）。可选配置文件 `IDP_WORKSPACE_CONFIG`：
 
 ```yaml

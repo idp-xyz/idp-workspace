@@ -37,6 +37,7 @@ test-integration: pg-up s3-up
 
 pg-up:
 	@docker rm -f $(PG_NAME) >/dev/null 2>&1 || true
+	@bash deploy/pull-image.sh $(PG_IMAGE)
 	@docker run -d --name $(PG_NAME) -e POSTGRES_PASSWORD=test -p 127.0.0.1::5432 $(PG_IMAGE) >/dev/null
 	@for i in $$(seq 1 60); do docker exec $(PG_NAME) pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1 && break; sleep 0.5; done
 
@@ -45,7 +46,7 @@ pg-down:
 
 s3-up:
 	@docker rm -f $(S3_NAME) >/dev/null 2>&1 || true
-	@docker image inspect $(S3_IMAGE) >/dev/null 2>&1 || { docker pull -q $(firstword $(subst :, ,$(S3_IMAGE)))@$(S3_DIGEST) >/dev/null && docker tag $(firstword $(subst :, ,$(S3_IMAGE)))@$(S3_DIGEST) $(S3_IMAGE); }
+	@docker image inspect $(S3_IMAGE) >/dev/null 2>&1 || { bash deploy/pull-image.sh $(firstword $(subst :, ,$(S3_IMAGE)))@$(S3_DIGEST) && docker tag $(firstword $(subst :, ,$(S3_IMAGE)))@$(S3_DIGEST) $(S3_IMAGE); }
 	@docker run -d --name $(S3_NAME) -p 127.0.0.1::9000 -e RUSTFS_ACCESS_KEY=itaccess -e RUSTFS_SECRET_KEY=it-secret-key-of-the-test-store \
 		-e RUSTFS_REGION=us-east-1 -e RUSTFS_CONSOLE_ENABLE=false -e RUSTFS_SSE_S3_MASTER_KEY=$$(openssl rand -base64 32) $(S3_IMAGE) >/dev/null
 	@P=$$(docker port $(S3_NAME) 9000/tcp | head -1 | sed 's/.*://'); for i in $$(seq 1 60); do \

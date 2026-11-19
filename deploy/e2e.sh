@@ -66,6 +66,10 @@ fi
 printf 'providers:\n  - name: local\n    kind: openai\n    baseUrl: http://fakemodel:18080/v1\n    insecure: true\n' > .local/host.yaml; chmod 644 .local/host.yaml
 umask 077
 
+# the third-party images of these services (PostgreSQL, Keycloak), named by the compose file, pulled here with retries so that compose has nothing to pull
+PULL_SERVICES=(postgres); [[ "$OIDC" == 1 ]] && PULL_SERVICES+=(keycloak)
+mapfile -t THIRD < <("${C[@]}" config --images "${PULL_SERVICES[@]}")
+bash deploy/pull-image.sh "${THIRD[@]}"
 "${C[@]}" up -d --wait postgres
 if [[ "$OIDC" == 1 ]]; then
   "${C[@]}" up -d keycloak
