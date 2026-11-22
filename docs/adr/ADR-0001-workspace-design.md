@@ -328,3 +328,112 @@ D23 的票据在 60 分钟内可以反复出示：读票据每次都交出文件
 - **来源不进记忆、不进审计**；管理员也看不到别人的运行事项（可见规则没变）。
 - **没有跑真实浏览器冒烟**（`tests/browser/shell.smoke.mjs`）：这次的检查在 jsdom 里做，页面字节是 React 的渲染结果。
 - **idp-web 重定向造成的"冲突"计数、`cited` 的标记语法的盲区**是 HOST 的事（idp-host D49-5、D49-8），Workspace 只展示 HOST 给的 `cited`。
+
+## 24. D30：已连接的服务（2026-11-22，外联桥计划 W1，配合 idp-mcp-bridge D16、D21 到 D32 与 idp-host D61）
+
+起因：成员的智能体要用第三方 MCP 服务（GitHub、Notion 等），用的是成员自己在那里的账号。授权码流程与令牌由 idp-mcp-bridge 做和保管（计划 `docs/adr/idp-mcp-bridge-oauth-plan.md` 第 2 节）；成员在的地方是 Workspace，所以连接的页面、OAuth 的回调、客户端元数据文档的托管、对话里的"去授权"提示都在这里（计划选择点 1：回调落在 Workspace；选择点 3：不暂停也不恢复运行，成员授权后再问一次）。代码里这个功能叫 **connections**，不叫 bridge：`packages/bridge`（应用桥 idp.bridge/v1）已占了这个名字。
+
+**对计划与桥的 API 的两处修正（实施中发现）**
+- 计划与任务书说"在成员的**会话**里记下发起的授权""遵守 **CSRF** 规则"。Workspace 没有服务端会话，也没有 cookie：成员的会话就是壳存在 sessionStorage 里的 Bearer 令牌，所有改状态的请求都靠它认人，跨站请求带不上它，所以没有 CSRF 规则，也不需要。**第三方的重定向是一次普通的浏览器导航，没有 `Authorization` 头**，后端在这个 GET 里认不出是谁。所以"回调路由"是壳本身（后端的一个公开 GET 路由，`no-store`），壳取出重定向带来的参数，再用成员的令牌 `POST /v1/me/connections/callback`；"会话里的待完成连接"是一行存在 PostgreSQL 里、按（租户、主体）归属的记录。
+- 桥的错误答案是 `{"error": "<码>", "reason": "<码>"}`（`error` 是字符串），Workspace 自己的下游客户端（`Downstream.Do`）读的是 `{"error":{"code"}}`，读不出码；所以这里自己写了一个小客户端，只认桥的固定码。
+
+| # | 决策 | 理由 |
+|---|---|---|
+| D30-1 | **设置：`targets.connections`**（`IDP_WORKSPACE_CONFIG`）：`endpoint`（桥的内部 API，端口 8681）、`auth: exchange` 与 `exchange`（成员的令牌换成以桥为受众的令牌，`audience` 就是桥的 `IDP_BRIDGE_API_AUDIENCE`，`clientId` 是桥的 `IDP_BRIDGE_WORKSPACE_CLIENT`）、`publicUrl`（Workspace 的公网地址，只有协议与主机，https）、`testOrigins`（只给验收：可以是明文 http 的 `host:port`，对应桥的 `IDP_BRIDGE_TEST_ORIGINS`）。**没配置 = 功能关闭**：没有页面、没有路由（`/oauth/*` 回 404），`/v1/me` 的 `connections` 是 false，壳不显示入口。`auth` 只能是 `exchange`：桥只从换来的令牌取成员（桥 D16），转发成员自己的令牌或用服务凭据都会被它拒绝，服务凭据更不能指名一个成员。`publicUrl` 用 http 而不在 `testOrigins` 里，启动失败 | 与 `targets.cmi` 同一个形状；功能独立于应用令牌（不借 `IDP_WORKSPACE_PUBLIC_URL`，那个设置要求签名密钥）；错配在启动时说，不是在成员点按钮时 |
+| D30-2 | **路由**（成员的，不在工作空间之下：一个人给自己连一次，所有工作空间通用）：`GET /v1/me/connections`；`POST /v1/me/connections/{id}/authorization`（正文 `{reviewer?, returnPath?}`，封闭）；`POST /v1/me/connections/callback`（正文 `{code, state, iss, error}`，封闭）；`DELETE /v1/me/connections/{id}/grant`；`DELETE /v1/me/connections/{id}/reviewer/grant`。公开的：`GET /oauth/callback`、`GET /oauth/client/{id}.json`。成员角色（`ws-member`，管理员通过）。连接 id 一律过 `^[A-Za-z0-9_-]{1,64}$`（桥的配置、HOST 的事件 D61-2 同一个模式），不符就是 404，不去问桥 | 路径里的 id 是进入桥的请求路径的，必须有界 |
+| D30-3 | **开始连接**：成员点"连接"→ 后端用换来的令牌调桥的 `.../authorization` → 从返回的地址里取出 `state`，记下 **state 的 SHA-256**、连接 id、是否评审账号、返回路径、10 分钟的过期时间 → 然后才把地址交给壳，壳把浏览器送过去。**只跟随 https 地址**（http 只给 `testOrigins` 里的精确 `host:port`），要有主机、没有用户信息、没有片段、**恰好一个** `state`（16 到 512 字符），不符就是 502 `CONNECTIONS_UNAVAILABLE` 而且什么也没记；壳再检查一遍协议。地址带着 state，所以从不写日志 | 桥给的地址是浏览器要去的地方，不能是 `javascript:` 或带用户信息的地址；先记后放行，回调就一定找得到 |
+| D30-4 | **待完成的连接在 PostgreSQL，不在内存**：表 `connection_pending`（迁移 0007，按租户的行级安全，服务角色只有 SELECT、INSERT、DELETE），主键（租户、主体、state 哈希）；库里只有哈希，没有 state、授权码或验证码。清单上有两个副本，内存里的记录在另一个副本上看不见；一个成员最多 20 条未完成的（旧的先走）；过期的在下一次开始时清掉；`return_path` 有 CHECK（相对路径：一个斜杠开头，第二个字符不是斜杠或反斜杠，没有反斜杠与控制字符）。"这个成员的会话"在这里的意思是（租户、主体），不是令牌：Keycloak 的会话标识（`sid`）不在 `Principal` 里 | 与桥的 `pending_states` 同一个办法；这是"授权的人就是发起的人"在 Workspace 一侧的一半（桥再核对一次，桥 D23） |
+| D30-5 | **回调**：浏览器落在 `GET /oauth/callback`（壳，公开，`Cache-Control: no-store`，`Referrer-Policy: no-referrer`）。壳立刻把查询从地址栏与历史里去掉，**没登录就先登录、再回来一次**（重定向的参数存在 sessionStorage，10 分钟、用一次就删；OIDC 的登录会整页重定向，地址栏的参数会丢），登录后 `POST /v1/me/connections/callback`。后端：state 的哈希必须是**这个成员（同租户同主体）**的未用、未过期的待完成连接，先**消费**它（`DELETE … RETURNING`，两个并发的回调只有一个拿得到），不是就 400 `CONNECTION_STATE_INVALID`（不是你的、没有、用过了，不分哪种）或 `CONNECTION_STATE_EXPIRED`，**不调用桥**；是就用记录里的连接 id 调桥的 `…/callback`，`code`、`state`、`iss`、`error` 原样（正文里没有可以指名别的连接或地址的字段）。成功回 `{connection, status, returnPath, reviewer?}`，壳说"已连接：<名称>"，再回到记录的路径。桥拒绝了也算用掉。审计 `connection.connect` 记连接 id，没有 code 与 state。重定向里的 `error_description`、`error_uri` 不读也不传 | 回调是成员登录状态下才有意义的动作；"消费在先"让并发和重放都没有第二次 |
+| D30-6 | **返回路径只能是 Workspace 自己的相对路径**（`ValidReturnPath`，Go 与壳各一份，契约的 schema 是第三份，三者由测试对齐）：长度 1 到 200，以一个 `/` 开头，第二个字符不是 `/` 或 `\`，只有可见 ASCII（其余百分号编码），解析后没有协议、主机、用户信息，**百分号解码后的路径**同样不以 `//` 开头、没有 `\`与控制字符，不是回调页自己（循环）。开始连接时检查，不符 422，什么也没调；回调的结果里壳再检查一遍，不符回 `/connections`；库里再有 CHECK。壳只回到成员自己的页面 `/connections/<id>`，所以没有开放重定向 | 记录的路径是下一次整页跳转的目标 |
+| D30-7 | **成员读到的只来自固定的码**：桥的错误码与 `reason` 在各自的固定集合里才传（`authorization_failed` 的 `iss_mismatch` 等五个，`authorization_denied` 的 `access_denied` 等八个，`authorization_server_refused` 的九个）；集合外的 reason 换成一句固定的话，集合外的错误码是 502 `CONNECTIONS_UNAVAILABLE`。Workspace 的问题码 `CONNECTION_*` 的 `message` 要么是那个固定的 reason 码、要么是一句固定的英文；壳按码和 reason 选中文句子，**从不显示服务端的 message 原文**。桥的 401（Workspace 的凭据在桥那里不被接受）对成员是 502，不是 401，免得壳把成员登出。列表里每一项再校验：id 过模式（不符的不显示），`status` 与 `reason` 在固定集合里（`reason` 只在需要重新授权时），标题清成纯文字并截到 100 字，范围只留可见 ASCII | 第三方（或被攻破的桥）说的话不是给成员读的，也不是 HTML |
+| D30-8 | **客户端元数据文档**：`GET /oauth/client/{id}.json`，不要登录（授权服务器来取）。取桥的 `GET /internal/v1/connections/{id}/client-metadata`（不带任何凭据，不换令牌），正文至多 64 KiB，必须是**一个** JSON 对象（后面没有东西），**`client_id` 必须逐字等于这个路由自己的完整公网地址** `publicUrl + /oauth/client/<id>.json`，才以 `application/json` 发出；否则 404（连接不存在、桥失败、文档超限、名字对不上都是同一个 404）。发出的是解析后重新编码的对象（键只有一个值：桥的字节里有重复键时，不同的解析器会取不同的值）。缓存 60 秒，失败缓存 15 秒，至多 256 项 | 文档不可能在不是它的 `client_id` 的地址上发出；这是 CIMD 的前提（授权服务器取到的文档必须声明自己的地址） |
+| D30-9 | **对话里的提示**：运行事件 `idp.host/authorization.required {toolCallId, tool, connection}`（idp-host D61）：`connection` 必须是字符串且过 id 模式，`toolCallId` 非空字符串，否则不显示任何东西；事件里别的字段（`url` 等）不读、不存。通过的，在那次工具调用旁显示"需要先连接 <名称>"（名称取自成员自己的列表，没有就是 id，作文字），一个指向 **Workspace 自己的**页面 `/connections/<id>` 的按钮（`<a href>`，id 是检查过的；点击在壳里打开该连接）和"连接之后，再问一次"。**没有任何链接来自事件或工具的结果**；工具结果里写什么都不产生提示。没有"已连接的服务"页的工作空间（功能关闭）只显示那句话，不显示按钮。提示只在跟随运行的实时事件里出现：历史（线程的消息）里没有事件，重新打开旧对话不再显示 | HOST 的 D61-3：地址只能是 Workspace 自己生成的 |
+| D30-10 | **页面**（`apps/web/src/Connections.tsx`）：每个连接的名称、状态（无需连接、未连接、已连接、需要重新授权）、原因的中文说明、已授予的范围；按状态给"连接""重新授权""断开"；**断开先确认**；有桥报告 `reviewer` 的运维另看到评审账号一栏：状态与"连接评审账号""断开评审账号"（断开的是评审账号的授权，不是成员自己的）；不显示 `reviewer` 的不显示这一栏。路径 `/connections` 与 `/connections/<id>` 打开这一页（后者把那个连接排第一并标出）。回调页的结果与失败用固定的话 | |
+| D30-11 | **契约 `idp.telos.workspace` 升到 1.4.0（只做新增）**：新定义 `Connection`、`ConnectionAccount`、`ConnectionList`、`ConnectionAuthorization`、`ConnectionResult`（封闭；后三个是文档，进根的 `oneOf`），已有对象一个字都没变；示例由 Go 值生成。`api/openapi.yaml` 增上述路由。**`idp-contracts/idp.telos.workspace/1.4.0/` 与 `registry.json`、CHANGELOG 要平台一侧搬过去**（本任务不改平台仓库）；先搬契约再升 Workspace 没有顺序问题，它只加东西 | 版本规则：次版本只做向后兼容的新增 |
+| D30-12 | **日志**：代码、state、验证码、令牌（成员的与换来的）、授权地址、state 的哈希都不进日志、指标、错误、审计；服务只记"桥没有应答"、"桥拒绝了（状态）"、"授权地址不可用（连接 id）"。GET `/oauth/callback?code=…&state=…` 的查询也不进日志：追踪的 span 名只含方法与路径 | 与桥 D31 同一条 |
+| D30-13 | **杂项**：根目录的 `report-d822dfd2c3026eefa892b77fff3975fb.xlsx`（2026-11-06 的 e303ccd 误提交，测试数据）用 `git rm` 删掉，`.gitignore` 加 `/report-*.xlsx` | |
+
+**运维要对应的配置**
+
+| Workspace 一侧 | 桥一侧 |
+|---|---|
+| `targets.connections.publicUrl: https://workspace.example` | `IDP_BRIDGE_REDIRECT_URI` = `https://workspace.example/oauth/callback`（也是每个预注册客户端在第三方登记的重定向地址） |
+| 同上 | 每条 `cimd` 连接的 `client.document` = `https://workspace.example/oauth/client/<连接 id>.json` |
+| `exchange.audience` | `IDP_BRIDGE_API_AUDIENCE` |
+| `exchange.clientId` | `IDP_BRIDGE_WORKSPACE_CLIENT`（桥只接受它作 `azp`） |
+| `endpoint` 指向桥的 8681 端口；`networkpolicy.yaml` 要加这条出口 | 桥的网络策略只让 Workspace 到 8681 |
+
+**升级顺序**：先桥（B2 以上），再 Workspace（迁移 0007，先跑迁移 Job）；Workspace 回滚时旧版本忽略那张表。
+
+**拿掉一个控制、看测试失败**（每一项在实现里拿掉一次，跑 `go test ./internal/... `（连接、API、配置、契约）、`tests/integration -run ConnectedServices` 或 `apps/web` 的 vitest，失败后恢复；每次只拿掉一个，标注"一起"的是互为冗余的两层）
+
+| 控制 | 拿掉的东西 | 失败的测试 |
+|---|---|---|
+| 功能关闭时没有路由 | 关闭时不再对 `/oauth/` 回 404；总是注册路由 | `TestConnectionsAreOffWhenNotConfigured` |
+| `/v1/me` 如实说开关 | 永远是 true | 同上 |
+| 开始时记下待完成连接（D30-3） | 不写 `PutPendingConnect` | `TestConnectRecordsThePendingConnect…`、`TestEveryCallToTheBridge…`、`TestAStateIsUsedOnce` 等 9 个 |
+| 只跟随 https | 不看协议；对任何 http 开放 | `TestTheBrowserIsSentOnlyToAnHTTPSAddressTheBridgeGave`（`plain_http`、`javascript`、`scheme_relative`…） |
+| 地址里没有用户信息 | 不拒绝 `user@` | 同上（`user_info`） |
+| 地址里恰好一个 state | 不数 | 同上（`two_states`、`a_short_state`） |
+| 绑定成员（主体） | 开始与回调都用固定的主体 | `TestACallbackWhoseStateThisMemberDidNotStartNeverReachesTheBridge`、`TestTheWholeConnectThroughTheHTTPSurface` 等 4 个 |
+| 绑定租户 | 回调查找不带租户 | `TestACallbackWhoseStateThisMemberDidNotStartNeverReachesTheBridge`（同名的另一个租户的 bob） |
+| 过期 | 不查过期 | `TestAnExpiredStateIsRefusedAndConsumed` |
+| 找不到记录不调桥 | 找不到时仍用一个默认连接去调桥 | 4 个：`…NeverReachesTheBridge`、`TestAStateIsUsedOnce`、`TestAnExpiredState…`、`TestTheWholeConnectThroughTheHTTPSurface` |
+| 一次用掉（库） | `TakePendingConnect` 只 SELECT | 集成 `TestConnectedServicesOnPostgres`（"taken twice"） |
+| 按主体取（库） | 不按主体过滤 | 同上（另一个主体取到了） |
+| 原样传递 | 丢掉 `iss`；去掉 `code` 的空白 | `TestTheCallbackPassesCodeStateIssAndErrorExactly…` |
+| 开始时检查返回路径 | 不检查 | `TestOpenRedirectAttempts…`、`TestTheWholeConnectThroughTheHTTPSurface` |
+| 返回路径：第二个斜杠、解析与主机（一起） | 同时拿掉第二字符检查与解析检查 | `TestOpenRedirectAttempts…`、`TestTheWholeConnectThroughTheHTTPSurface`、契约测试 |
+| 返回路径：反斜杠（两处一起） | 字符循环与解码后的检查都不拒绝 `\` | `TestOpenRedirectAttempts…`、`TestContractRejectsWhatTheConnectionsCheckRefuses` |
+| 返回路径：百分号解码后的路径 | 不检查解码后的路径 | 同上 |
+| 返回路径：不是回调页 | 允许 | `TestOpenRedirectAttempts…`（`/oauth/callback`） |
+| 库的 CHECK | 去掉 `return_path` 的 CHECK | 集成（`//evil.example`、`/\evil.example` 被存下） |
+| 行级安全 | 去掉表的 RLS | 集成（没有租户的连接看到了行） |
+| 每成员 20 条的上限 | 不限 | 集成 |
+| 过期的清掉 | 不清 | 集成 |
+| 错误只来自固定的码 | 原样传 reason；把桥未知的码与 reason 拼进消息 | `TestWhatTheMemberIsToldComesFromFixedCodesOnly`（两个方向） |
+| 日志里没有 state、code | 记 `state`、`code`；记授权地址 | `TestNeitherCodeNorStateNorTokensAreEverLogged`、`TestTheWholeConnectThroughTheHTTPSurface`；地址：`TestTheBrowserIsSentOnlyToAnHTTPS…` |
+| 用换来的令牌调桥 | 用成员自己的令牌 | 12 个（桥替身对非"为桥的受众换来的令牌"回 401） |
+| 文档的 `client_id` 对得上 | 不比较 | `TestClientDocumentIsServedOnlyUnderItsOwnClientID`、`TestClientMetadataDocumentsArePublicAndOnlyAtTheirOwnAddress` |
+| 文档大小有界 | 上限 64 MiB | `TestClientDocumentIsServedOnlyUnderItsOwnClientID`（`big`） |
+| 文档的 id 过模式 | 不检查 | `TestClientMetadataDocumentsArePublic…`（桥被问到了坏 id） |
+| 文档有缓存 | 不缓存 | `TestClientDocumentIsCachedBrieflyAndAMissLess` |
+| 文档后面没有东西 | 接受尾部 | `TestClientDocumentIsServedOnlyUnderItsOwnClientID`（`garbage`） |
+| 文档重新编码 | 原样发桥的字节 | 同上（`duplicate`） |
+| 文档的路由 | 不要 `.json` 后缀；内容类型 text/html | `TestClientMetadataDocumentsArePublic…`（两个方向） |
+| 列表再校验 | 不查 id；不查状态；`reason` 不限于重新授权；标题不清理 | `TestListShowsWhatTheBridgeReportsChecked`（四个各一次） |
+| 断开的 id 校验、评审标志 | 不校验；忽略 `reviewer`；记录里不存 `reviewer` | `TestDisconnect`、`TestConnectReviewerAccount`、`TestTheCallbackPasses…` |
+| 回调页不缓存 | 去掉 `no-store` | `TestTheWholeConnectThroughTheHTTPSurface` |
+| 请求正文封闭 | 回调、开始连接的正文接受多余字段 | `TestTheWholeConnectThroughTheHTTPSurface`（各一次） |
+| 设置 | `auth` 不限于 exchange；publicUrl 可以是 http；publicUrl 可以有路径 | `TestLoadConnections`（各一次） |
+| 契约的返回路径格式 | 去掉 schema 里的 pattern | `TestContractRejectsWhatTheConnectionsCheckRefuses` |
+| 壳：返回路径（`isLocalPath`）各层 | 第二个斜杠与主机（一起）；反斜杠与非 ASCII；解码后的路径；回调页 | `connections.test.ts` 的 `isLocalPath`、`ConnectionCallback.test.tsx` 的"never goes to a return path…" |
+| 壳：授权地址 | 任何协议；用户信息 | `connections.test.ts`、`Connections.test.tsx` 的"does not follow an address…" |
+| 壳：只显示固定的话 | 显示服务端的 message（reason 处；未知码处）；原型键当 reason | `connections.test.ts`（三个）、`ConnectionCallback.test.tsx`（两个）、`Connections.test.tsx` |
+| 壳：重定向跨登录保存 | 不存；不过期；没有参数也算 | `connections.test.ts`（各一次） |
+| 壳：回调只交一次 | 去掉 once 保护；用后不删 | `ConnectionCallback.test.tsx`（StrictMode 下两次）、"App at the OAuth callback" |
+| 壳：地址栏里没有授权码 | 不 `replaceState` | `ConnectionCallback.test.tsx`（`window.location.search`） |
+| 壳：返回路径再检查 | 不检查 | `ConnectionCallback.test.tsx`（`https://evil.example/`…） |
+| 壳：事件的 id | id 模式放开；任何值都读；不要 `toolCallId` 也造一步 | `events.test.ts`、`ConnectionPrompt.test.tsx` |
+| 壳：事件的其余字段 | 整个 value 存进那一步 | `events.test.ts`（`phish` 在序列化里） |
+| 壳：链接由 id 生成 | `connectionPath` 不检查 id | `connections.test.ts` |
+| 壳：提示只来自事件 | 工具结果里有"connection"也出提示 | `ConnectionPrompt.test.tsx`（"a tool result that says…"） |
+| 壳：功能关闭时没有按钮 | 总是有按钮 | `ConnectionPrompt.test.tsx` |
+| 页：断开先确认 | 不确认 | `Connections.test.tsx`（两个） |
+| 页：评审账号只在桥报告时出现；断开的是评审账号 | 总显示；断开调成员自己的 | `Connections.test.tsx` |
+| 页：连接的返回路径是它自己的页面 | 不传 | `Connections.test.tsx`（两个） |
+| 页：标题是文字 | `dangerouslySetInnerHTML` | `Connections.test.tsx`（"never as markup"） |
+| 页：重新授权的原因 | 不显示 | `Connections.test.tsx` |
+| 导航只在功能开启时 | 总显示 | `Connections.test.tsx`（App 两个） |
+
+**没有被测试发现的拿掉**：对话页的 `onOpenConnection` 只在功能开启时传（"功能关闭时给对话页一个去页面的办法"）——拿掉它测试仍然通过，因为没有一个 App 级别的测试同时有对话与该事件；后果只是功能关闭的工作空间里（HOST 本来就不会发这个事件）多一个按钮。另一层冗余：回调里空 `state`的检查在实现里去掉了，它与"找不到记录"是同一个结果（空串的哈希从来不会被记录）。
+
+**验证**：`go test -race ./...`（含 `TestConnectedServicesOnPostgres`：真实 PostgreSQL 上另一个成员、另一个租户同名的成员与管理员都拿不到 bob 的待完成连接，第二次使用、过期、行级安全、CHECK、上限）；`npm run typecheck`、`npm test`（95 个）；`vite build`；用真实的二进制在 PostgreSQL 上起服务、配置 `targets.connections`，看 `/v1/me`、文档路由、桥不可用时的回答与日志。**没跑**：平台的验收（compose、kind；桥那边还没有评审账号的路由，见下），真实浏览器冒烟（`tests/browser/shell.smoke.mjs`），真实的第三方。
+
+**没有做的 / 不清楚的**
+- **桥的评审账号路由还没有**：桥的 `internal/api`（0c6ca75）没有 `reviewer` 字段、`…/reviewer/authorization`、`…/reviewer/grant`。这里按任务书写的形状实现。回调用的是同一条 `…/callback`（由 `state` 决定是哪个账号），这是我的假设，要与桥核对。
+- **`Principal.Subject` 与桥的 `sub`**：`IDP_WORKSPACE_SUBJECT_CLAIM` 配成别的声明时，Workspace 的待完成连接按那个主体，桥按令牌的 `sub`。两边各自一致，桥再核对一次，不会出错，但审计里的主体是 Workspace 的。
+- **NetworkPolicy 与 Keycloak**：没改 `deploy/kubernetes`（功能默认关闭，不该放开出口）；要开时按上表加出口，并让 Keycloak 允许 `idp-workspace` 客户端为桥的受众换令牌。
+- **提示不进历史**：重新打开旧对话不再显示"需要先连接"（事件不在线程消息里）。
+- **契约的发布副本**：`idp-contracts/idp.telos.workspace/1.4.0/`、`registry.json`、CHANGELOG 由平台一侧搬（规则 1：副本必须逐字节相同）。
+- **不暂停运行**（计划选择点 3）；服务级凭据与企业身份断言不在这一期。

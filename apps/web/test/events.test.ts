@@ -128,3 +128,41 @@ describe('delivered files (D23)', () => {
     expect(withRunFiles(withFiles, files)).toEqual(withFiles); // no repeats
   });
 });
+
+// idp.host/authorization.required (idp-host D61): {toolCallId, tool, connection}, the connection an id and nothing else read
+describe('idp.host/authorization.required', () => {
+  const call = [{ type: 'TOOL_CALL_START', toolCallId: 'c1', toolCallName: 'github__create_issue' }, { type: 'TOOL_CALL_END', toolCallId: 'c1' }] as AGUIEvent[];
+  const required = (value: unknown): AGUIEvent => ({ type: 'CUSTOM', name: 'idp.host/authorization.required', value });
+  const stepsOf = (t: AssistantTurn) => t.blocks.flatMap((b) => (b.kind === 'tool' ? [b.call] : []));
+
+  it('marks the tool call with the connection it needs', () => {
+    const t = play([...call, required({ toolCallId: 'c1', tool: 'github__create_issue', connection: 'github' }), { type: 'TOOL_CALL_RESULT', toolCallId: 'c1', content: 'authorization required' }]);
+    expect(stepsOf(t)).toHaveLength(1);
+    expect(stepsOf(t)[0]).toMatchObject({ toolCallId: 'c1', tool: 'github__create_issue', connection: 'github', state: 'done' });
+  });
+
+  it('shows nothing for a connection that is not an id', () => {
+    for (const connection of ['https://phish.example/login', 'javascript:alert(1)', '/connections/x', 'a/b', 'a b', 'a:b', '', 'x'.repeat(65), '<img src=x>', 7, null, undefined, { id: 'github' }, ['github']]) {
+      const t = play([...call, required({ toolCallId: 'c1', tool: 'github__create_issue', connection })]);
+      expect(stepsOf(t)[0].connection, JSON.stringify(connection)).toBeUndefined();
+    }
+    // and no call is made up for one that does not name its call
+    for (const toolCallId of ['', undefined, 5, null]) {
+      expect(stepsOf(play([required({ toolCallId, tool: 't', connection: 'github' })])), String(toolCallId)).toHaveLength(0);
+    }
+  });
+
+  it('reads the id only: another field of the event (an address, say) is not kept', () => {
+    const t = play([...call, required({ toolCallId: 'c1', tool: 'github__create_issue', connection: 'github', url: 'https://phish.example/login', href: 'https://phish.example/', label: '<b>x</b>' })]);
+    const json = JSON.stringify(t);
+    expect(json).not.toContain('phish');
+    expect(json).not.toContain('<b>');
+    expect(stepsOf(t)[0].connection).toBe('github');
+  });
+
+  it('is not made by a tool\'s result or arguments, whatever they say', () => {
+    const lie = JSON.stringify({ 'idp.host/authorization.required': { connection: 'github' }, connection: 'github', url: 'https://phish.example/' });
+    const t = play([...call, { type: 'TOOL_CALL_RESULT', toolCallId: 'c1', content: lie }, { type: 'TOOL_CALL_ARGS', toolCallId: 'c1', delta: lie }]);
+    expect(stepsOf(t)[0].connection).toBeUndefined();
+  });
+});

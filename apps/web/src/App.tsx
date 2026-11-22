@@ -3,6 +3,10 @@ import { Api, ApiError } from './api.ts';
 import { OIDC } from './oidc.ts';
 import type { Tokens } from './oidc.ts';
 import { Admin } from './Admin.tsx';
+import { ConnectionCallback } from './ConnectionCallback.tsx';
+import { ConnectionsView } from './Connections.tsx';
+import { CALLBACK_PATH, CONNECTIONS_PATH, clearCallback, connectionPath, connectionsOfPath, readCallback } from './connections.ts';
+import type { OAuthParams } from './connections.ts';
 import { AppFrame } from './AppFrame.tsx';
 import { Conversations, chatAgents } from './Conversations.tsx';
 import { Inbox } from './Inbox.tsx';
@@ -28,7 +32,11 @@ export function App(props: { api?: Api }) {
   const [items, setItems] = useState<InboxItem[]>([]);
   // null until /v1/me answers; false when the workspace has no memory store (me.memory is false)
   const [memoryOn, setMemoryOn] = useState<boolean | null>(null);
-  const [view, setView] = useState<string>('inbox');
+  // connected services (D30): the third party's redirect lands on /oauth/callback; a path /connections[/id] opens the page
+  const [oauth, setOauth] = useState<OAuthParams | null>(() => readCallback(window.location, sessionStorage));
+  const [connFocus, setConnFocus] = useState<string | undefined>(() => connectionsOfPath(window.location.pathname)?.id);
+  const [connectionsOn, setConnectionsOn] = useState<boolean | null>(null);
+  const [view, setView] = useState<string>(() => (connectionsOfPath(window.location.pathname) ? '@connections' : 'inbox'));
   // the conversation the member asked to open from the inbox (D22): its idp-host thread
   const [openThread, setOpenThread] = useState<string | null>(null);
   const [theme, setTheme] = useTheme();
@@ -44,6 +52,10 @@ export function App(props: { api?: Api }) {
 
   // sign-in with the identity provider (ADR-0001 D14): finish a redirect on /callback, then keep the
   // access token fresh with the refresh token until it no longer works
+  // the redirect's query holds the authorization code: out of the address bar and the history at once (the shell has it in memory)
+  useEffect(() => {
+    if (window.location.pathname === CALLBACK_PATH && window.location.search) window.history.replaceState(null, '', CALLBACK_PATH);
+  }, []);
   const keep = useCallback((t: Tokens) => {
     api.signIn(t.accessToken);
     sessionStorage.setItem('idp-workspace.session', JSON.stringify({ refreshToken: t.refreshToken, idToken: t.idToken, expiresAt: t.expiresAt }));
@@ -79,8 +91,8 @@ export function App(props: { api?: Api }) {
     if (to) window.location.assign(to);
   };
   useEffect(() => {
-    if (!token) { setMe(null); setMemoryOn(null); return; }
-    api.me().then((m) => { setMe(m); setMemoryOn(Boolean(m.memory)); }).catch(() => setMemoryOn(false));
+    if (!token) { setMe(null); setMemoryOn(null); setConnectionsOn(null); return; }
+    api.me().then((m) => { setMe(m); setMemoryOn(Boolean(m.memory)); setConnectionsOn(Boolean(m.connections)); }).catch(() => { setMemoryOn(false); setConnectionsOn(false); });
     setError(null); // a new sign-in starts clean: errors of an earlier token are not this session's
     api.workspaces().then((list) => {
       setWorkspaces(list);
@@ -101,6 +113,20 @@ export function App(props: { api?: Api }) {
     api.stream(ws.name, (it) => setItems((cur) => [it, ...cur.filter((x) => x.itemId !== it.itemId)]), abort.signal).catch((e) => setError(String(e)));
     return () => abort.abort();
   }, [api, ws]);
+
+  // the address follows the page: the connected-services page has its own path (and a connection's own page), every other view the root
+  useEffect(() => {
+    if (!token || oauth) return;
+    const p = window.location.pathname;
+    if (view === '@connections') {
+      const want = connFocus ? connectionPath(connFocus) : CONNECTIONS_PATH;
+      if (p !== want) window.history.replaceState(null, '', want);
+    } else if (connectionsOfPath(p) || p === CALLBACK_PATH) window.history.replaceState(null, '', '/');
+  }, [token, oauth, view, connFocus]);
+  // a path that names the page when the workspace has none shows the inbox
+  useEffect(() => { if (connectionsOn === false && view === '@connections') setView('inbox'); }, [connectionsOn, view]);
+  const connectionTitle = useCallback(async (id: string) => (await api.connections()).find((c) => c.id === id)?.title, [api]);
+  const finishOAuth = useCallback((path: string) => { clearCallback(sessionStorage); setOauth(null); window.location.assign(path); }, []);
 
   if (!token) return <SignIn devMode={devMode} oidc={oidc} error={error} onToken={(t) => { api.signIn(t); setToken(api.token); }} />;
   const open = items.filter((i) => i.status === 'open' && !i.archivedAt).length;
@@ -134,6 +160,7 @@ export function App(props: { api?: Api }) {
         {canChat && <button className={view === '@chat' ? 'active' : ''} onClick={() => { setOpenThread(null); setView('@chat'); }}>对话</button>}
         {apps.some((a) => launchable(a).length > 0) && <button className={view === '@launch' ? 'active' : ''} onClick={() => setView('@launch')}>发起</button>}
         {memoryOn && <button className={view === '@memory' ? 'active' : ''} onClick={() => setView('@memory')}>记忆</button>}
+        {connectionsOn && <button className={view === '@connections' ? 'active' : ''} onClick={() => { setConnFocus(undefined); setView('@connections'); }}>已连接的服务</button>}
         {me?.roles.includes('ws-admin') && <button className={view === '@admin' ? 'active' : ''} onClick={() => setView('@admin')}>管理</button>}
         {apps.filter((a) => a.manifest.entry).map((a) => (
           <button key={a.manifest.name} className={view === a.manifest.name ? 'active' : ''} onClick={() => setView(a.manifest.name)}>{a.manifest.title}</button>
@@ -141,13 +168,15 @@ export function App(props: { api?: Api }) {
       </nav>
       <main>
         {error && <p className="error" role="alert">{error}</p>}
-        {!ws && <p className="muted">你还不属于任何工作空间。</p>}
-        {ws && view === 'inbox' && <Inbox api={api} ws={ws} items={items} apps={apps} confirm={ui.confirm} notify={notify} onChanged={(it) => setItems((cur) => cur.map((x) => x.itemId === it.itemId ? it : x))} onOpenRun={canChat ? openConversation : undefined} />}
-        {ws && view === '@chat' && <Conversations api={api} ws={ws} apps={apps} confirm={ui.confirm} notify={notify} open={openThread} />}
-        {ws && view === '@launch' && <Launcher api={api} ws={ws} apps={apps} confirm={ui.confirm} notify={notify} />}
-        {memoryOn && view === '@memory' && <MemoryView api={api} confirm={ui.confirm} notify={notify} />}
-        {view === '@admin' && me?.roles.includes('ws-admin') && <Admin api={api} workspaces={workspaces} current={ws} notify={notify} onWorkspaces={() => api.workspaces().then(setWorkspaces).catch(() => {})} />}
-        {ws && current && <AppFrame api={api} ws={ws} app={current} ui={ui} contextVersion={0} />}
+        {oauth && <ConnectionCallback api={api} params={oauth} titleOf={connectionTitle} go={finishOAuth} />}
+        {!oauth && !ws && <p className="muted">你还不属于任何工作空间。</p>}
+        {!oauth && ws && view === 'inbox' && <Inbox api={api} ws={ws} items={items} apps={apps} confirm={ui.confirm} notify={notify} onChanged={(it) => setItems((cur) => cur.map((x) => x.itemId === it.itemId ? it : x))} onOpenRun={canChat ? openConversation : undefined} />}
+        {!oauth && ws && view === '@chat' && <Conversations api={api} ws={ws} apps={apps} confirm={ui.confirm} notify={notify} open={openThread} onOpenConnection={connectionsOn ? (id) => { setConnFocus(id); setView('@connections'); } : undefined} />}
+        {!oauth && ws && view === '@launch' && <Launcher api={api} ws={ws} apps={apps} confirm={ui.confirm} notify={notify} />}
+        {!oauth && memoryOn && view === '@memory' && <MemoryView api={api} confirm={ui.confirm} notify={notify} />}
+        {!oauth && connectionsOn && view === '@connections' && <ConnectionsView api={api} confirm={ui.confirm} notify={notify} focus={connFocus} />}
+        {!oauth && view === '@admin' && me?.roles.includes('ws-admin') && <Admin api={api} workspaces={workspaces} current={ws} notify={notify} onWorkspaces={() => api.workspaces().then(setWorkspaces).catch(() => {})} />}
+        {!oauth && ws && current && <AppFrame api={api} ws={ws} app={current} ui={ui} contextVersion={0} />}
       </main>
       <div className="toasts" aria-live="polite">{toasts.map((t) => <div key={t.id} className={`toast ${t.level}`}>{t.message}</div>)}</div>
     </div>

@@ -22,6 +22,7 @@ import (
 	"idp-workspace/internal/apptoken"
 	"idp-workspace/internal/authorization"
 	"idp-workspace/internal/canonical"
+	"idp-workspace/internal/connections"
 	"idp-workspace/internal/dispatch"
 	"idp-workspace/internal/observability"
 	"idp-workspace/internal/runs"
@@ -55,6 +56,8 @@ type API struct {
 	OIDC *ShellOIDC
 	// AppTokens signs the tokens apps' backends receive (D15); nil = identity.token unavailable.
 	AppTokens *apptoken.Signer
+	// Connections is the connected services (D30); nil = off: no routes, no page, nothing in /v1/me.
+	Connections *connections.Service
 	// Files keeps members' files and signs runs' tickets for them (D23).
 	Files   FileConfig
 	Log     *slog.Logger
@@ -400,7 +403,7 @@ func (a *API) Handler() http.Handler {
 			roles = []string{}
 		}
 		// memory: the workspace has a CMI target, so the shell shows the "my memory" page (no probe request that would 404)
-		transport.WriteJSON(w, 200, map[string]any{"subject": p.Subject, "tenant": p.Tenant, "roles": roles, "memory": a.CMI != nil})
+		transport.WriteJSON(w, 200, map[string]any{"subject": p.Subject, "tenant": p.Tenant, "roles": roles, "memory": a.CMI != nil, "connections": a.Connections != nil})
 	})
 	mux.Handle("GET /v1/me/memory", a.role(a.memoryList, member))
 	mux.Handle("GET /v1/me/memory/export", a.role(a.memoryExport, member))
@@ -616,6 +619,7 @@ func (a *API) Handler() http.Handler {
 		_, _ = w.Write(a.AppTokens.JWKS())
 	})
 	mux.Handle("POST /v1/workspaces/{ws}/apps/{app}/token", a.role(a.appToken, member))
+	a.connectionRoutes(mux)
 	mux.HandleFunc("GET /", a.web)
 	return a.authenticate(mux)
 }

@@ -1,6 +1,6 @@
 // The shell's client of the workspace API (same origin). The bearer token lives in sessionStorage
 // for the tab only; it is never given to an app frame (ADR-0001 D5).
-import type { AuditEvent, Conversation, InboxItem, InstalledApp, InstallationRow, Invocation, MemberFile, MemoryItem, Me, Member, Release, Workspace, WorkContext } from './types.ts';
+import type { AuditEvent, Connection, ConnectionResult, Conversation, InboxItem, InstalledApp, InstallationRow, Invocation, MemberFile, MemoryItem, Me, Member, Release, Workspace, WorkContext } from './types.ts';
 import type { AGUIEvent, HostMessage, HostRun, HostToolCall } from './agent/events.ts';
 import { sseParser } from './sse.ts';
 
@@ -56,6 +56,16 @@ export class Api {
   deleteAllMemory() { return this.request<{ revoked: number }>('DELETE', '/v1/me/memory'); }
 
   me() { return this.request<Me>('GET', '/v1/me'); }
+
+  // ---- connected services (D30): the member's own accounts at third parties, kept by idp-mcp-bridge ----
+  connections() { return this.request<{ connections: Connection[] }>('GET', '/v1/me/connections').then((r) => r.connections); }
+  /** starts connecting: the server records the start for this member and returns the third party's authorization page, where the browser goes */
+  connect(id: string, opts: { reviewer?: boolean; returnPath?: string } = {}) {
+    return this.request<{ url: string }>('POST', `/v1/me/connections/${encodeURIComponent(id)}/authorization`, { ...(opts.reviewer ? { reviewer: true } : {}), ...(opts.returnPath ? { returnPath: opts.returnPath } : {}) }).then((r) => r.url);
+  }
+  /** finishes it with what the third party's redirect carried, exactly as received */
+  finishConnection(params: { code: string; state: string; iss: string; error: string }) { return this.request<ConnectionResult>('POST', '/v1/me/connections/callback', params); }
+  disconnect(id: string, reviewer = false) { return this.request<null>('DELETE', `/v1/me/connections/${encodeURIComponent(id)}${reviewer ? '/reviewer' : ''}/grant`); }
 
   // ---- administration (ws-admin; the server enforces it) ----
   createWorkspace(name: string, displayName: string) { return this.request<Workspace>('POST', '/api/v1/workspaces', { name, displayName }); }

@@ -3,6 +3,8 @@
 // functions: a reducer over events and a builder over messages, so that the rendering is testable
 // without a browser and the event vocabulary of idp-host is read in one place.
 
+import { CONNECTION_ID } from '../connectionId.ts';
+
 export interface AGUIEvent { type: string; [k: string]: unknown }
 
 export interface HostMessage {
@@ -35,6 +37,8 @@ export interface ToolStep {
   expiresAt?: string;
   reason?: string;
   decidedBy?: string;
+  /** the connection the tool needs the member to connect first (idp.host/authorization.required): only an id that passed CONNECTION_ID */
+  connection?: string;
 }
 export type Block =
   | { kind: 'text'; id: string; text: string; done: boolean }
@@ -154,6 +158,13 @@ function custom(t: AssistantTurn, name: string, v: Record<string, unknown>): Ass
       const decision = str(v.decision), state = str(v.state);
       return { ...withTool(t, str(v.toolCallId), str(v.tool), (c) => ({ ...c, decidedBy: str(v.decidedBy) || c.decidedBy,
         state: decision === 'reject' || state === 'REJECTED' ? 'rejected' : state === 'EXPIRED' ? 'expired' : 'confirmed' })), status: 'running' };
+    }
+    case 'idp.host/authorization.required': {
+      // D61: {toolCallId, tool, connection} and nothing else is read. The connection is an id, never an address: anything that is
+      // not one (another type, a url, a path, markup) is no prompt; any other field of the event (a url, say) is not looked at.
+      const id = v.connection, call = v.toolCallId;
+      if (typeof id !== 'string' || !CONNECTION_ID.test(id) || typeof call !== 'string' || call === '') return t;
+      return withTool(t, call, str(v.tool), (c) => ({ ...c, connection: id }));
     }
     case 'idp.host/tool.denied':
       return withTool(t, str(v.toolCallId), str(v.tool), (c) => ({ ...c, state: 'denied', argsDone: true, reason: str(v.reason) }));

@@ -16,7 +16,8 @@
 //	IDP_WORKSPACE_OIDC_CLIENT_ID the shell's public OIDC client (authorization code + PKCE at IDP_WORKSPACE_ISSUER, ADR-0001 D14); IDP_WORKSPACE_OIDC_SCOPE (default "openid")
 //	IDP_WORKSPACE_PUBLIC_URL     the workspace's own URL, issuer of app tokens (D15)
 //	IDP_WORKSPACE_SIGNING_KEY_FILE   P-256 PEM key signing app tokens; in dev mode an ephemeral key when unset
-//	IDP_WORKSPACE_CONFIG         optional YAML: action targets (idp-host, idp-eer) and the webhook secret (ADR-0001 D4)
+//	IDP_WORKSPACE_CONFIG         optional YAML: action targets (idp-host, idp-eer), the webhook secret (ADR-0001 D4) and, in targets.connections,
+//	                             the connected services (idp-mcp-bridge's internal API, the audience to exchange for, the Workspace's public URL: D30)
 //	IDP_DEV_MODE                 "true": HS256 development tokens
 //	IDP_WORKSPACE_ISSUER / IDP_WORKSPACE_AUDIENCE   accepted tokens (default idp-workspace-dev / idp-workspace)
 //	IDP_WORKSPACE_JWKS_URL       production keys; IDP_DEV_SECRET[_FILE] (>= 32 bytes) in dev mode instead
@@ -55,6 +56,7 @@ import (
 	"idp-workspace/internal/api"
 	"idp-workspace/internal/apptoken"
 	"idp-workspace/internal/config"
+	"idp-workspace/internal/connections"
 	"idp-workspace/internal/dispatch"
 	"idp-workspace/internal/files"
 	"idp-workspace/internal/observability"
@@ -218,6 +220,13 @@ func serve(log *slog.Logger) error {
 			return fmt.Errorf("targets.cmi: %w", err)
 		}
 	}
+	var bridgeAPI *dispatch.Downstream // ADR-0001 D30: idp-mcp-bridge's internal API, off when not configured
+	if c := cfg.Targets.Connections; c != nil {
+		if bridgeAPI, err = downstream(&c.Downstream); err != nil {
+			return fmt.Errorf("targets.connections: %w", err)
+		}
+		bridgeAPI.HTTP.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse } // a redirect is an answer, never followed with the member's token
+	}
 	if e := cfg.Targets.EER; e != nil {
 		if d.EER, err = downstream(&e.Downstream); err != nil {
 			return fmt.Errorf("targets.eer: %w", err)
@@ -271,6 +280,10 @@ func serve(log *slog.Logger) error {
 		defer ms.Close()
 	}
 	a := &api.API{Store: store, Auth: verifier, Dispatcher: d, CMI: cmi, Log: log, Metrics: metrics, Version: version, DevMode: verifier.Dev(), WebDir: env("IDP_WORKSPACE_WEB_DIR", "")}
+	if c := cfg.Targets.Connections; c != nil {
+		a.Connections = &connections.Service{Bridge: bridgeAPI, PublicURL: c.PublicURL, TestOrigins: c.TestOrigins, Pending: store, Log: log, Audit: a.AuditConnection}
+		log.Info("connected services on", "callback", a.Connections.CallbackURL())
+	}
 	if id := env("IDP_WORKSPACE_OIDC_CLIENT_ID", ""); id != "" { // ADR-0001 D14
 		a.OIDC = &api.ShellOIDC{Issuer: prof.Issuer, ClientID: id, Scope: env("IDP_WORKSPACE_OIDC_SCOPE", "openid")}
 	}
@@ -353,7 +366,7 @@ func serve(log *slog.Logger) error {
 			errc <- srv.ListenAndServe()
 		}
 	}()
-	log.Info("idp-workspace listening", "addr", srv.Addr, "devMode", dev, "tls", srv.TLSConfig != nil, "host", d.Host != nil, "eer", d.EER != nil, "cmi", cmi != nil, "webhooks", d.WebhookSecret != nil, "web", a.WebDir != "", "oidc", a.OIDC != nil, "appTokens", a.AppTokens != nil, "fileTickets", internal != nil)
+	log.Info("idp-workspace listening", "addr", srv.Addr, "devMode", dev, "tls", srv.TLSConfig != nil, "host", d.Host != nil, "eer", d.EER != nil, "cmi", cmi != nil, "connections", a.Connections != nil, "webhooks", d.WebhookSecret != nil, "web", a.WebDir != "", "oidc", a.OIDC != nil, "appTokens", a.AppTokens != nil, "fileTickets", internal != nil)
 	select {
 	case err := <-errc:
 		return err

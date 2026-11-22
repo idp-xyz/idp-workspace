@@ -21,6 +21,7 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
+	"idp-workspace/internal/connections"
 	"idp-workspace/internal/workspace"
 )
 
@@ -28,7 +29,7 @@ var update = flag.Bool("update", false, "regenerate api/contracts/examples.json 
 
 const (
 	contractDir = "../../api/contracts"
-	contractID  = "urn:idp:telos:workspace:1.3.0"
+	contractID  = "urn:idp:telos:workspace:1.4.0"
 )
 
 type noLoader struct{}
@@ -82,7 +83,7 @@ func (k *contract) schema(def string) *jsonschema.Schema {
 	return s
 }
 
-var roots = map[string]bool{"Workspace": true, "AppManifest": true, "AppRelease": true, "Installation": true, "InboxItem": true, "WorkContext": true, "Invocation": true, "BridgeMessage": true, "Problem": true, "MemberFile": true}
+var roots = map[string]bool{"Workspace": true, "AppManifest": true, "AppRelease": true, "Installation": true, "InboxItem": true, "WorkContext": true, "Invocation": true, "BridgeMessage": true, "Problem": true, "MemberFile": true, "ConnectionList": true, "ConnectionAuthorization": true, "ConnectionResult": true}
 
 func (k *contract) validate(def string, raw []byte) error {
 	inst, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
@@ -211,7 +212,17 @@ func buildExamples(t *testing.T) []byte {
 		Size: 48213, SHA256: strings.Repeat("3b", 32), Source: workspace.FileSourceUpload, Sensitivity: "internal", CreatedAt: at, ExpiresAt: at.Add(30 * 24 * time.Hour)})
 	add("MemberFile", workspace.MemberFile{ID: "7a2d3b0f-9e5c-4d4b-8f32-1c8e6a4b9d52", Workspace: "us-ops", Name: "报价单-修订.docx", MediaType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 		Size: 49102, SHA256: strings.Repeat("4c", 32), Source: "run:ws_7f3a1c2e5b6d4c8e9f0123456789abcd", Sensitivity: "internal", CreatedAt: at.Add(time.Hour), ExpiresAt: at.Add(30*24*time.Hour + time.Hour)})
-	f := examplesFile{Description: "idp.telos.workspace 1.3.0 的示例：每一个都是 idp-workspace 的 Go 值序列化的结果（API 返回或应用桥发送的形状）。", GeneratedBy: "go test ./internal/workspace -run TestContract -update", Examples: xs}
+	// D30: the member's connected services. A connection of the member's own, one that needs authorizing again, and one an
+	// operator sees with the reviewer account; what the connect and the callback answer
+	add("ConnectionList", workspace.ConnectionList{Connections: []workspace.Connection{
+		{ID: "github", Title: "GitHub", Status: workspace.ConnectionConnected, Scope: "repo read:user"},
+		{ID: "notion", Title: "Notion", Status: workspace.ConnectionReauthorize, Reason: "insufficient_scope", Scope: "read_content"},
+		{ID: "linear", Title: "Linear", Status: workspace.ConnectionNotConnected, Reviewer: &workspace.ConnectionAccount{Status: workspace.ConnectionConnected, Scope: "read"}},
+		{ID: "docs", Title: "Public docs", Status: workspace.ConnectionNotRequired}}})
+	add("ConnectionAuthorization", workspace.ConnectionAuthorization{URL: "https://github.example/login/oauth/authorize?response_type=code&client_id=https%3A%2F%2Fworkspace.example%2Foauth%2Fclient%2Fgithub.json&state=Qm9iJ3Mgc3RhdGUgaXMgbm90IGEgc2VjcmV0IGhlcmU"})
+	add("ConnectionResult", workspace.ConnectionResult{Connection: "github", Status: workspace.ConnectionConnected, ReturnPath: "/connections"})
+	add("ConnectionResult", workspace.ConnectionResult{Connection: "linear", Status: workspace.ConnectionConnected, ReturnPath: "/connections/linear", Reviewer: true})
+	f := examplesFile{Description: "idp.telos.workspace 1.4.0 的示例：每一个都是 idp-workspace 的 Go 值序列化的结果（API 返回或应用桥发送的形状）。", GeneratedBy: "go test ./internal/workspace -run TestContract -update", Examples: xs}
 	raw, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -272,7 +283,8 @@ func TestContractFieldsMatchGo(t *testing.T) {
 		"ActionContract": workspace.ActionContract{}, "Target": workspace.Target{}, "Revocation": workspace.Revocation{}, "AppRelease": workspace.Release{},
 		"Installation": workspace.Installation{}, "Ref": workspace.Ref{}, "Assignees": workspace.Assignees{}, "ItemAction": workspace.ItemAction{},
 		"Resolution": workspace.Resolution{}, "Entity": workspace.Entity{}, "InboxItem": workspace.InboxItem{}, "WorkContext": workspace.WorkContext{},
-		"Problem": workspace.Problem{}, "Invocation": workspace.Invocation{}, "BridgeMessage": workspace.BridgeMessage{}, "MemberFile": workspace.MemberFile{}, "RunSource": workspace.RunSource{}}
+		"Problem": workspace.Problem{}, "Invocation": workspace.Invocation{}, "BridgeMessage": workspace.BridgeMessage{}, "MemberFile": workspace.MemberFile{}, "RunSource": workspace.RunSource{}, "Connection": workspace.Connection{}, "ConnectionAccount": workspace.ConnectionAccount{},
+		"ConnectionList": workspace.ConnectionList{}, "ConnectionAuthorization": workspace.ConnectionAuthorization{}, "ConnectionResult": workspace.ConnectionResult{}}
 	for def, zero := range closed {
 		d, ok := defs[def].(map[string]any)
 		if !ok {
@@ -517,5 +529,75 @@ func TestContractAndGoAgreeOnWhatARunSourceIs(t *testing.T) {
 	raw, _ = json.Marshal(extra)
 	if err := k.validate("InboxItem", raw); err == nil {
 		t.Error("a source is closed: an excerpt is not part of it")
+	}
+}
+
+// TestContractRejectsWhatTheConnectionsCheckRefuses (D30): what the Workspace refuses to show or to go back to, the schema
+// refuses too; and a return path the Go check accepts is one the schema accepts.
+func TestContractRejectsWhatTheConnectionsCheckRefuses(t *testing.T) {
+	k := loadContract(t)
+	list := workspace.ConnectionList{Connections: []workspace.Connection{{ID: "github", Title: "GitHub", Status: workspace.ConnectionConnected, Reviewer: &workspace.ConnectionAccount{Status: workspace.ConnectionNotConnected}}}}
+	for name, c := range map[string]struct {
+		path  string
+		value any
+	}{
+		"an id with a slash":       {"connections.0.id", "a/b"},
+		"an id that is an address": {"connections.0.id", "https://evil.example"},
+		"a status of its own":      {"connections.0.status", "approved"},
+		"a reviewer status":        {"connections.0.reviewer.status", "owner"},
+		"a reason without a code":  {"connections.0.reason", "the third party said no"},
+		"an empty title":           {"connections.0.title", ""},
+		"an address field":         {"connections.0.url", "https://evil.example"},
+	} {
+		if err := k.validate("ConnectionList", mutate(t, list, c.path, c.value)); err == nil {
+			t.Errorf("%s: the schema accepts it", name)
+		}
+	}
+	// the Go side's fixed sets are the schema's
+	conn := k.raw["$defs"].(map[string]any)["Connection"].(map[string]any)["properties"].(map[string]any)
+	enum := func(field string) []string {
+		var out []string
+		for _, x := range conn[field].(map[string]any)["enum"].([]any) {
+			out = append(out, x.(string))
+		}
+		sort.Strings(out)
+		return out
+	}
+	keys := func(m map[string]bool) []string {
+		var out []string
+		for k := range m {
+			out = append(out, k)
+		}
+		sort.Strings(out)
+		return out
+	}
+	if !reflect.DeepEqual(enum("status"), keys(workspace.ConnectionStatuses)) || !reflect.DeepEqual(enum("reason"), keys(workspace.ConnectionReasons)) {
+		t.Errorf("fixed sets differ: schema %v %v, Go %v %v", enum("status"), enum("reason"), keys(workspace.ConnectionStatuses), keys(workspace.ConnectionReasons))
+	}
+	for _, id := range []string{"github", "a_b-C9", strings.Repeat("a", 64)} {
+		if !workspace.ConnectionIDPattern.MatchString(id) {
+			t.Errorf("%q refused by Go", id)
+		}
+	}
+	// where a connect comes back to
+	for path, want := range map[string]bool{"/": true, "/connections": true, "/connections/github?from=chat": true, "//evil.example": false, "/\\evil.example": false, "https://evil.example": false,
+		"evil.example": false, "/a b": false, "": false, "/é": false, "/%2F/evil.example": false} {
+		res := workspace.ConnectionResult{Connection: "github", Status: workspace.ConnectionConnected, ReturnPath: path}
+		raw, _ := json.Marshal(res)
+		schemaOK := k.validate("ConnectionResult", raw) == nil
+		if goOK := connections.ValidReturnPath(path); goOK && !schemaOK {
+			t.Errorf("%q: Go accepts it, the schema does not", path)
+		}
+		if !want && schemaOK && (path == "//evil.example" || path == "/\\evil.example" || path == "https://evil.example" || path == "evil.example" || path == "/a b" || path == "") {
+			t.Errorf("%q: the schema accepts it", path)
+		}
+		if connections.ValidReturnPath(path) != want {
+			t.Errorf("%q: Go says %v", path, !want)
+		}
+	}
+	for _, u := range []string{"javascript:alert(1)", "/relative", "", "data:text/html,x"} {
+		if err := k.validate("ConnectionAuthorization", []byte(`{"url":`+strconv.Quote(u)+`}`)); err == nil {
+			t.Errorf("an authorization address %q is accepted", u)
+		}
 	}
 }

@@ -28,6 +28,10 @@ components:
     WorkContext: {$ref: 'contracts/schema.json#/$defs/WorkContext'}
     Invocation: {$ref: 'contracts/schema.json#/$defs/Invocation'}
     MemberFile: {$ref: 'contracts/schema.json#/$defs/MemberFile'}
+    Connection: {$ref: 'contracts/schema.json#/$defs/Connection'}
+    ConnectionList: {$ref: 'contracts/schema.json#/$defs/ConnectionList'}
+    ConnectionAuthorization: {$ref: 'contracts/schema.json#/$defs/ConnectionAuthorization'}
+    ConnectionResult: {$ref: 'contracts/schema.json#/$defs/ConnectionResult'}
     Problem: {$ref: 'contracts/schema.json#/$defs/Problem'}
     Error: {type: object, required: [error], properties: {error: {$ref: '#/components/schemas/Problem'}}}
   responses:
@@ -96,6 +100,42 @@ paths:
     delete:
       summary: 'Delete one memory of the caller (D21). idp-cmi decides whether it is theirs: its 404 and 403 pass through (NOT_FOUND, FORBIDDEN); no retry. Audit memory.delete with the id. ws-member'
       responses: {'200': {description: '{revoked: 1}'}, '403': {$ref: '#/components/responses/Error'}, '404': {$ref: '#/components/responses/Error'}, '422': {$ref: '#/components/responses/Error'}, '502': {$ref: '#/components/responses/Error'}}
+  /v1/me/connections:
+    get:
+      summary: 'The connected services (D30; contract 1.4.0): the third-party MCP services idp-mcp-bridge offers, with the caller''s own state of each (not_required, not_connected, connected, reauthorization_required with a reason) and, for an operator, the reviewer account''s. Called at the bridge with the caller''s own token exchanged for the bridge''s audience; every field re-checked. Only with targets.connections: without it there is no such route (404) and /v1/me says connections:false. 502 CONNECTIONS_UNAVAILABLE. ws-member'
+      responses: {'200': {description: the list, content: {application/json: {schema: {$ref: '#/components/schemas/ConnectionList'}}}}, '502': {$ref: '#/components/responses/Error'}}
+  /v1/me/connections/{id}/authorization:
+    parameters: [{name: id, in: path, required: true, schema: {type: string, pattern: '^[A-Za-z0-9_-]{1,64}$'}}]
+    post:
+      summary: 'Start connecting (D30): asks the bridge for the authorization address, records for THIS member (tenant and subject) the pending connect - the SHA-256 of the address''s state, the connection, whether it is the reviewer account, the return path, expiry in 10 minutes - and only then answers {url}, which the shell sends the browser to. The address must be https (http only for an origin in targets.connections.testOrigins) with a host, no user info and one state, or it is not followed (502 CONNECTIONS_UNAVAILABLE and nothing recorded). Body {reviewer?: bool, returnPath?: string}: returnPath must be a relative path of the Workspace (422 INVALID otherwise), default /connections. Errors: 404 NOT_FOUND, 403 FORBIDDEN (reviewer without the bridge''s role), 409 CONNECTION_REFUSED (message = a fixed reason code), 502 CONNECTION_SERVER_UNAVAILABLE | CONNECTIONS_UNAVAILABLE. ws-member'
+      requestBody: {content: {application/json: {schema: {type: object, additionalProperties: false, properties: {reviewer: {type: boolean}, returnPath: {type: string, maxLength: 200}}}}}}
+      responses: {'200': {description: the authorization page, content: {application/json: {schema: {$ref: '#/components/schemas/ConnectionAuthorization'}}}}, '403': {$ref: '#/components/responses/Error'}, '404': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}, '422': {$ref: '#/components/responses/Error'}, '502': {$ref: '#/components/responses/Error'}}
+  /v1/me/connections/callback:
+    post:
+      summary: 'Finish connecting (D30). The third party''s redirect lands on GET /oauth/callback (the shell); the shell hands what it carried here with the member''s token. The state must be a pending connect of THIS member (same tenant and subject), unused and unexpired: it is consumed first, then the bridge''s callback is called for the RECORDED connection with code, state, iss and error exactly as received. Anything else is refused without a call to the bridge: 400 CONNECTION_STATE_INVALID (not theirs, unknown or used) or CONNECTION_STATE_EXPIRED. The bridge''s refusals: 400 CONNECTION_REQUEST_INVALID | CONNECTION_AUTHORIZATION_FAILED | CONNECTION_AUTHORIZATION_DENIED (message = a fixed reason code), 409 CONNECTION_CONFIG_CHANGED, 502 CONNECTION_SERVER_UNAVAILABLE | CONNECTIONS_UNAVAILABLE. Never a third party''s words. Audit connection.connect (the connection, never a code or state). ws-member'
+      requestBody: {required: true, content: {application/json: {schema: {type: object, additionalProperties: false, properties: {code: {type: string, maxLength: 4096}, state: {type: string, maxLength: 4096}, iss: {type: string, maxLength: 4096}, error: {type: string, maxLength: 4096}}}}}}
+      responses: {'200': {description: connected, content: {application/json: {schema: {$ref: '#/components/schemas/ConnectionResult'}}}}, '400': {$ref: '#/components/responses/Error'}, '409': {$ref: '#/components/responses/Error'}, '422': {$ref: '#/components/responses/Error'}, '502': {$ref: '#/components/responses/Error'}}
+  /v1/me/connections/{id}/grant:
+    parameters: [{name: id, in: path, required: true, schema: {type: string, pattern: '^[A-Za-z0-9_-]{1,64}$'}}]
+    delete:
+      summary: 'Disconnect the caller''s own account at the bridge (the grant is deleted there, and revoked at the third party when it has a revocation endpoint). 204. Audit connection.disconnect. ws-member'
+      responses: {'204': {description: disconnected}, '404': {$ref: '#/components/responses/Error'}, '502': {$ref: '#/components/responses/Error'}}
+  /v1/me/connections/{id}/reviewer/grant:
+    parameters: [{name: id, in: path, required: true, schema: {type: string, pattern: '^[A-Za-z0-9_-]{1,64}$'}}]
+    delete:
+      summary: 'Disconnect the connection''s reviewer account (operators; the bridge decides: 403 FORBIDDEN without its role). 204. ws-member'
+      responses: {'204': {description: disconnected}, '403': {$ref: '#/components/responses/Error'}, '404': {$ref: '#/components/responses/Error'}, '502': {$ref: '#/components/responses/Error'}}
+  /oauth/callback:
+    get:
+      security: []
+      summary: 'The page the third party''s redirect lands on (the bridge''s IDP_BRIDGE_REDIRECT_URI = <public URL>/oauth/callback): the web shell, for anyone (it carries no data), never cached (no-store) and never sent on in a Referer. The shell takes the query out of the address bar at once, signs the member in first if they are not (and comes back once), and posts to /v1/me/connections/callback. 404 without targets.connections'
+      responses: {'200': {description: the shell}, '404': {description: connected services are off}}
+  /oauth/client/{file}:
+    parameters: [{name: file, in: path, required: true, schema: {type: string, pattern: '^[A-Za-z0-9_-]{1,64}\.json$'}, description: '<connection id>.json'}]
+    get:
+      security: []
+      summary: 'A connection''s OAuth Client ID Metadata Document, public: the bridge''s document for that connection (cached for a minute), served as application/json ONLY when its client_id is exactly this address (<public URL>/oauth/client/<id>.json); otherwise 404, as for an unknown connection, an id that does not match the pattern, a document of more than 64 KiB or one that is not a JSON object. The operator puts this address in the connection''s client.document on the bridge'
+      responses: {'200': {description: the document, content: {application/json: {schema: {type: object}}}}, '404': {description: no document}}
   /v1/workspaces:
     get: {summary: 'The workspaces the caller belongs to (administrators: all). ws-member', responses: {'200': {description: '{workspaces}'}}}
   /v1/workspaces/{ws}:

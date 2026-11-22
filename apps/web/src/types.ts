@@ -21,7 +21,7 @@ export interface InboxItem {
 export interface WorkContext { workspaceId: string; subject: string; entities: Entity[]; app?: string; thread?: string; itemId?: string; version: number }
 export interface Invocation { invocationId: string; app: string; action: string; target?: Target; status: 'succeeded' | 'failed'; result?: Record<string, unknown>; error?: { code: string; message: string } }
 
-export interface Me { subject: string; tenant: string; roles: string[]; memory?: boolean }
+export interface Me { subject: string; tenant: string; roles: string[]; memory?: boolean; connections?: boolean }
 export interface Member { subject: string; roles: string[]; addedBy: string; addedAt: string }
 export interface Release { name: string; version: string; digest: string; status: 'published' | 'revoked'; manifest: Manifest; publishedBy: string; publishedAt: string; revocation?: { by: string; at: string; reason: string } }
 export interface InstallationRow { installationId: string; app: string; version: string; config: Record<string, unknown>; revision: number; releaseStatus: 'published' | 'revoked' }
@@ -30,3 +30,9 @@ export interface Conversation { threadId: string; app: string; action: string; a
 /** a member's file (D23; contract MemberFile): uploaded, or delivered by a run (source run:<runId>) */
 export interface MemberFile { id: string; workspace: string; name: string; mediaType: string; size: number; sha256: string; source: string; sensitivity: string; createdAt: string; expiresAt: string }
 export interface MemoryItem { id: string; content: string; createdAt: string; validUntil?: string; source?: string; ref?: string; tags: string[] }
+
+// Connected services (ADR-0001 D30; contract idp.telos.workspace 1.4.0)
+export type ConnectionStatus = 'not_required' | 'not_connected' | 'connected' | 'reauthorization_required';
+export interface ConnectionAccount { status: ConnectionStatus; reason?: string; scope?: string }
+export interface Connection { id: string; title: string; status: ConnectionStatus; reason?: string; scope?: string; reviewer?: ConnectionAccount }
+export interface ConnectionResult { connection: string; status: 'connected'; returnPath: string; reviewer?: boolean }

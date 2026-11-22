@@ -45,7 +45,9 @@ func (a *API) web(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(clean, "/assets/") && file != filepath.Join(a.WebDir, "index.html") {
 		h.Set("Cache-Control", "public, max-age=31536000, immutable") // content-hashed by the build
 	} else {
-		h.Set("Cache-Control", "no-cache")
+		if h.Get("Cache-Control") == "" { // a page may ask for more (the OAuth callback: no-store)
+			h.Set("Cache-Control", "no-cache")
+		}
 		h.Set("Content-Security-Policy", a.shellCSP())
 		h.Set("X-Frame-Options", "DENY")
 	}

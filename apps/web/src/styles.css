@@ -158,3 +158,20 @@ th, td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; ver
   .side-toggle { display: inline-block; }
   .turn.user .bubble, .turn.assistant .answer { max-width: 100%; }
 }
+
+/* connected services (ADR-0001 D30) */
+.connections { max-width: 760px; }
+.connection-list { list-style: none; padding: 0; margin: 12px 0; display: grid; gap: 10px; }
+.connection-list > li { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; }
+.connection-list > li.focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--soft); }
+.connection-list .head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.connection-list .status { font-size: 12px; padding: 1px 8px; border-radius: 10px; background: var(--soft); color: var(--muted); }
+.connection-list .status.ok { color: var(--ok); }
+.connection-list .status.warn { color: var(--warn); }
+.connection-list .reason { color: var(--warn); margin: 6px 0 0; }
+.connection-list .scope { margin: 6px 0 0; font-size: 13px; }
+.connection-list .reviewer { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line); }
+.connection-list .reviewer .label { font-size: 13px; color: var(--muted); }
+.connect-prompt { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 8px 12px; background: var(--soft); border-bottom: 1px solid var(--line); }
+a.button { font: inherit; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); border-radius: 6px; padding: 2px 12px; text-decoration: none; }
+p.ok { color: var(--ok); }

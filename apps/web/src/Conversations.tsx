@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent, KeyboardEvent } from 'react';
 import type { Api } from './api.ts';
+import { connectionPath } from './connections.ts';
 import { friendly, runFailure } from './errors.ts';
 import { launchable } from './Launcher.tsx';
 import { Markdown } from './agent/markdown.tsx';
@@ -67,9 +68,16 @@ export interface ConversationsProps {
   confirm(question: string): Promise<boolean>;
   /** a conversation to open (from the inbox); the thread id */
   open?: string | null;
+  /** goes to the connected-services page for a connection (ADR-0001 D30); absent when the workspace has no connected services */
+  onOpenConnection?(id: string): void;
 }
 
-export function Conversations({ api, ws, apps, notify, confirm, open }: ConversationsProps) {
+// What a tool call that needs a connection offers (idp.host/authorization.required, ADR-0001 D30): the connection's title from the
+// member's own list (the id when it is not there) and the way to the Workspace's own page for it.
+interface ConnectionPrompt { titleOf(id: string): string; open?(id: string): void }
+const ConnectionPromptContext = createContext<ConnectionPrompt>({ titleOf: (id) => id });
+
+export function Conversations({ api, ws, apps, notify, confirm, open, onOpenConnection }: ConversationsProps) {
   const [roles, setRoles] = useState<string[] | null | undefined>(undefined);
   const [list, setList] = useState<Conversation[]>([]);
   const [titles, setTitles] = useState<Record<string, string>>({});
@@ -85,6 +93,7 @@ export function Conversations({ api, ws, apps, notify, confirm, open }: Conversa
   const resume = useRef<(() => void) | null>(null);
   const skipLoad = useRef<string | null>(null);
   const turnsRef = useRef<Turn[]>([]);
+  const [connTitles, setConnTitles] = useState<Record<string, string> | null>(null);
   const shownAgentRef = useRef<ChatAgent | null>(null);
   turnsRef.current = turns;
 
@@ -92,6 +101,23 @@ export function Conversations({ api, ws, apps, notify, confirm, open }: Conversa
   const agent = agents.find((a) => a.key === agentKey) ?? agents[0] ?? null;
   const live = turns.length ? turns[turns.length - 1] : null;
   const busy = live?.kind === 'assistant' && (live.status === 'queued' || live.status === 'running' || live.status === 'awaiting');
+
+  // a tool call that needs a connection shows its title: read the member's list once, when the first such call appears
+  const needsConnection = turns.some((t) => t.kind === 'assistant' && t.blocks.some((b) => b.kind === 'tool' && b.call.connection !== undefined));
+  useEffect(() => {
+    if (!needsConnection || connTitles !== null) return;
+    let on = true;
+    (async () => {
+      try {
+        const list = await api.connections();
+        if (on) setConnTitles(Object.fromEntries(list.map((c) => [c.id, c.title])));
+      } catch {
+        if (on) setConnTitles({}); // the id stands for the title
+      }
+    })();
+    return () => { on = false; };
+  }, [api, needsConnection, connTitles]);
+  const prompt = useMemo<ConnectionPrompt>(() => ({ titleOf: (id) => connTitles?.[id] ?? id, open: onOpenConnection }), [connTitles, onOpenConnection]);
 
   // the member's roles decide which actions are offered (the server decides again)
   useEffect(() => {
@@ -320,6 +346,7 @@ export function Conversations({ api, ws, apps, notify, confirm, open }: Conversa
   const shownAgent = current ? agents.find((a) => a.key === `${current.app}/${current.action}`) ?? null : agent;
   shownAgentRef.current = shownAgent;
   return (
+    <ConnectionPromptContext.Provider value={prompt}>
     <div className={`chat ${sideOpen ? 'side-open' : ''}`}>
       <aside className="chat-side" aria-label="对话列表">
         <div className="chat-side-head">
@@ -369,6 +396,7 @@ export function Conversations({ api, ws, apps, notify, confirm, open }: Conversa
           attached={attached} uploading={uploading} onAttach={attach} onDetach={(id) => setAttached((cur) => cur.filter((f) => f.id !== id))} />
       </section>
     </div>
+    </ConnectionPromptContext.Provider>
   );
 }
 
@@ -494,6 +522,7 @@ function ToolCard({ call, onDecide }: { call: ToolStep; onDecide(call: ToolStep,
   const args = pretty(call.args);
   return (
     <div className={`tool state-${call.state}`}>
+      {call.connection !== undefined && <ConnectPrompt id={call.connection} />}
       <button type="button" className="tool-head" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
         <span className="tool-icon" aria-hidden="true">{call.state === 'running' ? '◌' : call.state === 'pending' ? '⏸' : call.state === 'done' || call.state === 'confirmed' ? '✓' : '×'}</span>
         <span className="tool-name">{toolLabel(call.tool)}</span>
@@ -508,6 +537,19 @@ function ToolCard({ call, onDecide }: { call: ToolStep; onDecide(call: ToolStep,
           {call.state === 'pending' && <Approval call={call} onDecide={onDecide} />}
         </div>
       )}
+    </div>
+  );
+}
+
+// "需要先连接 <title>": the id passed the connection pattern when the event was read; the title is the member's own list's (plain text);
+// the button is a link to the Workspace's own page, built here from the id - nothing of the event or the tool's result is a link
+function ConnectPrompt({ id }: { id: string }) {
+  const { titleOf, open } = useContext(ConnectionPromptContext);
+  return (
+    <div className="connect-prompt" role="note">
+      <span>需要先连接 {titleOf(id)}</span>
+      {open && <a className="button" href={connectionPath(id)} onClick={(e) => { e.preventDefault(); open(id); }}>去连接</a>}
+      <span className="muted">连接之后，再问一次。</span>
     </div>
   );
 }
