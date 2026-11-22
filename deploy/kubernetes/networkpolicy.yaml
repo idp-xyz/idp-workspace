@@ -87,6 +87,15 @@ spec:
               kubernetes.io/metadata.name: idp-eer
       ports:
         - {protocol: TCP, port: 8080}
+    - to:   # idp-mcp-bridge's internal API (connected services, D30; only used when targets.connections is set): its port 8681, not its MCP port
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: idp-mcp-bridge
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: idp-mcp-bridge
+      ports:
+        - {protocol: TCP, port: 8681}
     - to:
         - ipBlock:
             cidr: 203.0.113.10/32       # the IdP (JWKS, token exchange)

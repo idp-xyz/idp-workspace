@@ -7,6 +7,7 @@ package deploy
 import (
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -266,5 +267,55 @@ func TestServicesAndPoliciesMatchWorkloads(t *testing.T) {
 		if !covered {
 			t.Errorf("%s has no NetworkPolicy", name(d))
 		}
+	}
+}
+
+// connected services (D30): the egress to the bridge's internal API is in the shipped policy, on its API port and not its MCP port
+func TestTheWorkspaceMayReachTheBridgesAPIPortOnly(t *testing.T) {
+	m := loadAll(t)
+	for _, p := range m.byKind["NetworkPolicy"] {
+		if str(p, "spec", "podSelector", "matchLabels", "app.kubernetes.io/component") != "workspace" {
+			continue
+		}
+		var ports []any
+		for _, rule := range list(p, "spec", "egress") {
+			for _, to := range list(rule, "to") {
+				if str(to, "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name") == "idp-mcp-bridge" {
+					if str(to, "podSelector", "matchLabels", "app.kubernetes.io/name") != "idp-mcp-bridge" {
+						t.Error("the egress to the bridge must name its pods")
+					}
+					for _, port := range list(rule, "ports") {
+						ports = append(ports, get(port, "port"))
+					}
+				}
+			}
+		}
+		if len(ports) != 1 || ports[0] != 8681 {
+			t.Errorf("egress to idp-mcp-bridge on %v, want 8681 only", ports)
+		}
+	}
+}
+
+// testOrigins exempts addresses from the https rule (D30-1): for acceptance only, so no shipped manifest, example or configuration may carry it
+func TestNoShippedFileSetsTestOrigins(t *testing.T) {
+	root := filepath.Join(dir, "..")
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		switch filepath.Ext(path) {
+		case ".yaml", ".yml", ".json", ".sh":
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if strings.Contains(string(b), "testOrigins") {
+				t.Errorf("%s sets testOrigins, which is for acceptance only", path)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
