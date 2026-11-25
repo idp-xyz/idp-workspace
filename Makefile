@@ -1,8 +1,8 @@
 # idp-workspace build and test entry points.
-PG_IMAGE ?= public.ecr.aws/docker/library/postgres:17-alpine
+PG_IMAGE ?= ghcr.io/idp-xyz/mirror:public.ecr.aws__docker__library__postgres__17-alpine
 PG_NAME  ?= idp-workspace-test-pg
 # the object store for file contents (ADR-0001 D24): RustFS, pinned by digest (the platform's kind backups use the same build)
-S3_IMAGE  ?= docker.io/rustfs/rustfs:1.0.4-glibc
+S3_IMAGE  ?= ghcr.io/idp-xyz/mirror:docker.io__rustfs__rustfs__1.0.4-glibc
 S3_DIGEST ?= sha256:a9b705b9256be756802a60f3498abdc543918b5b5a4437a57a541e89e733c74d
 S3_NAME   ?= idp-workspace-test-s3
 

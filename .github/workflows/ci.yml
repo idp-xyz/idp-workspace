@@ -21,6 +21,11 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Third-party images are named by the mirror (platform releases/mirror-images.yaml), not by their source
+        run: |
+          if git grep -nE '(public\.ecr\.aws|quay\.io|docker\.io)/|ghcr\.io/(aquasecurity|cloudnative-pg|huggingface)/' -- . ':!*.md' ':!*.sum' | grep -v 'mirror:upstream'; then
+            echo "an image is named by its source: use ghcr.io/idp-xyz/mirror:<tag> (python3 tools/mirror_images.py plan, in the platform repository)" >&2; exit 1
+          fi
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
