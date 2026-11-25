@@ -166,7 +166,7 @@ describe('App: the connected-services page', () => {
     const on = render(<App api={shell(true)} />);
     fireEvent.click(await on.findByRole('button', { name: '已连接的服务' }));
     expect(await on.findByText('GitHub')).toBeTruthy();
-    expect(window.location.pathname).toBe('/connections');
+    await waitFor(() => expect(window.location.pathname).toBe('/connections')); // the address follows in an effect
     fireEvent.click(on.getByRole('button', { name: '收件箱' }));
     expect(window.location.pathname).toBe('/');
   });
@@ -188,7 +188,7 @@ describe('App: the connected-services page', () => {
       const r = render(<App api={shell(false)} />);
       await r.findByText('收件箱是空的。');
       expect(r.queryByText('已连接的服务')).toBeNull();
-      expect(window.location.pathname).toBe('/');
+      await waitFor(() => expect(window.location.pathname).toBe('/')); // the shell rewrites the address in an effect
     } finally {
       window.history.replaceState(null, '', '/');
     }
